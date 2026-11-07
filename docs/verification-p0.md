@@ -60,7 +60,7 @@
 3. **显式指定接口**（`os.networkInterfaces()` 枚举 + `addMembership(group, ifaceIP)`）→ 多播回环 5/5 收到 ✓
 
 **设计修订**：adapter-direct 的 mDNS **手写 dgram 实现**（bonjour-service 不支持指定接口，弃用）：节点与 hub 必须枚举本机 IPv4 接口逐一绑定/加组，绝不依赖默认多播路由。
-**余项（待用户协助）**：第二台真实设备上的跨机发现；Windows 防火墙对 node.exe UDP 5353 入站的放行确认。
+**余项（待用户协助）**：第二台真实设备上的跨机发现——脚本已备：设备 A 跑 `node advertise.mjs`，设备 B 跑 `node browse.mjs`（组播 239.255.77.68:53550，JSON announce，显式绑接口，零依赖）；需确认 Windows 防火墙对 node.exe 的 UDP 入站（5353/53550）放行。
 
 ## V4 · journal 对账 ✅
 
