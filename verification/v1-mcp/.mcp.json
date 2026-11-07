@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "ping": {
+      "command": "node",
+      "args": ["D:/Projects/Multi-Device-Pool/verification/v1-mcp/server.mjs"]
+    }
+  }
+}

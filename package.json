@@ -1,0 +1,16 @@
+{
+  "name": "multi-device-pool",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "verify": "node verification/v2-encoding.mjs && node verification/v2b-encoding.mjs && node verification/v3-mdns/dgram-iface.mjs && node verification/v4-journal/main.mjs"
+  }
+}

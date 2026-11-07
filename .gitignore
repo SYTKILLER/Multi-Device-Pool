@@ -1,0 +1,6 @@
+node_modules/
+dist/
+*.tsbuildinfo
+verification/*/node_modules/
+verification/v4-journal/journal-data/
+.vite/
