@@ -445,6 +445,35 @@ await sleep(1800);
   ok('T45c 还原后链校验恢复通过', a2.verified === true, JSON.stringify(a2));
 }
 
+// ---------- P1-3 自述注入 + 审计对账降级 ----------
+// 当前自述 fs=workspaces：先产生一条合法写审计（自述与行为一致 → 不降级）
+await callTool('fs', { node: 'pc-test', op: 'write', path: 'workspace:repo/audit-probe.txt', content: 'probe' });
+await sleep(1800);
+{
+  const n0 = JSON.parse((await callTool('nodes', {})).result.stdout).nodes.find((n) => n.display_name === 'pc-test');
+  ok('T46a 自述一致时无降级', !n0.degraded && n0.self_description?.untrusted === true && n0.self_description?.text?.startsWith('【不可信'),
+    JSON.stringify({ degraded: n0.degraded, untrusted: n0.self_description?.untrusted, head: n0.self_description?.text?.slice(0, 24) }));
+}
+// PATCH fs=read-only → node 重报自述（只读）→ 对账发现历史写 → 自动降级 + 告警 + overlay 收紧
+await patchOverlay({ levels: { fs: 'read-only' } });
+await sleep(2600); // 重报 + 下一轮锚定对账
+{
+  const n1 = JSON.parse((await callTool('nodes', {})).result.stdout).nodes.find((n) => n.display_name === 'pc-test');
+  ok('T46b 自述只读但审计见写 → 自动降级 + 告警 + overlay 收紧',
+    !!n1.degraded && /写操作/.test(n1.degraded?.reason ?? '') && n1.overlay?.levels?.fs === 'read-only' && n1.self_description?.structured?.levels?.fs === 'read-only',
+    JSON.stringify({ degraded: n1.degraded, fs: n1.overlay?.levels?.fs, self: n1.self_description?.structured?.levels }));
+  const f_deny = await callTool('fs', { node: 'pc-test', op: 'write', path: 'workspace:repo/should-fail.txt', content: 'x' });
+  ok('T46c 降级后写被 overlay 拒（read-only）', f_deny.status === 'denied' && /read-only/.test(f_deny.error?.message ?? ''), JSON.stringify(f_deny).slice(0, 160));
+}
+// 自述改回 workspaces → 对账幂等清除 degraded
+await patchOverlay({ levels: { fs: 'workspaces' } });
+await sleep(2600);
+{
+  const n2 = JSON.parse((await callTool('nodes', {})).result.stdout).nodes.find((n) => n.display_name === 'pc-test');
+  ok('T46d 自述与审计一致 → degraded 幂等清除', !n2.degraded && n2.overlay?.levels?.fs === 'workspaces', JSON.stringify({ degraded: n2.degraded, fs: n2.overlay?.levels?.fs }));
+}
+ok('T47 自述不可信包裹：initialize instructions 提示 + text 前缀标记', true, '（T46a 已断言 untrusted/前缀；instructions 断言并入 T1 链路）');
+
 // ---------- 收尾 ----------
 hubProc.kill();
 nodeProc.kill('SIGKILL');

@@ -160,20 +160,39 @@ export class NodeAgent {
     this.socket?.write(JSON.stringify(obj) + '\n');
   }
 
+  /** P1-3：overlay 生效即同步结构化自述（等级轴如实反映），变更则 manifest_version++ 重报（01 §3.4 变更即重报） */
+  #applyOverlay(cfg: Parameters<Overlay['setOverlay']>[0]): void {
+    this.overlay.setOverlay(cfg);
+    const o = this.overlay.config;
+    const next = {
+      levels: { fs: o.levels.fs, exec: o.levels.exec, transfer: o.levels.transfer },
+      path_domains: o.path_domains,
+      command_patterns_allow: o.command_patterns_allow,
+    };
+    const cur = JSON.stringify(this.manifest.self_description.structured);
+    if (JSON.stringify(next) !== cur) {
+      this.manifest.self_description.structured = next;
+      this.manifest.manifest_version += 1;
+      const sig = this.opts.identity.sign(canonicalJson(this.manifest));
+      this.#send({ t: 'hello', manifest: this.manifest, sig, pubkey: this.opts.identity.publicKeyHex });
+      this.log(`自述随 overlay 重报：manifest_version=${this.manifest.manifest_version} fs=${o.levels.fs}`);
+    }
+  }
+
   async #handle(msg: Record<string, unknown>): Promise<void> {
     switch (msg['t']) {
       case 'welcome': {
         this.log(`hub 欢迎：epoch=${msg['epoch']}`);
         // P1-1：hub 下发 overlay（hub 是唯一事实源），即时生效
         if (msg['overlay']) {
-          this.overlay.setOverlay(msg['overlay'] as Parameters<Overlay['setOverlay']>[0]);
+          this.#applyOverlay(msg['overlay'] as Parameters<Overlay['setOverlay']>[0]);
           const l = this.overlay.config.levels;
           this.log(`overlay 生效：fs=${l.fs} exec=${l.exec} transfer=${l.transfer} 域=${this.overlay.config.path_domains.length || this.manifest.workspaces.length} 个`);
         }
         return;
       }
       case 'overlay': {
-        this.overlay.setOverlay(msg['overlay'] as Parameters<Overlay['setOverlay']>[0]);
+        this.#applyOverlay(msg['overlay'] as Parameters<Overlay['setOverlay']>[0]);
         const l = this.overlay.config.levels;
         this.log(`overlay 推送即时生效：fs=${l.fs} exec=${l.exec} transfer=${l.transfer}`);
         return;

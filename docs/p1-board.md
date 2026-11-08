@@ -18,7 +18,7 @@
 |---|---|---|---|---|---|
 | P1-1 | overlay 全量：等级轴（deny<read-only<workspaces<allowlist<full）+ realpath 路径域 + exec cwd 夹紧 | packages/node | **A** | ✅ **完成（B 机互审通过 2026-11-09）**：代码走查（realpath/大小写折叠/`..` 词法折叠/域前缀 path.sep 防碰撞）+ 合并后 B 机全套跑绿（V5 40/40 + 三包单测） | V5 新增：symlink 逃逸被拒、`..` 相对路径被拒、大小写折叠生效（红队 P1-11） |
 | P1-2 | 内容闸模式表 + 学习式白名单（首次前缀审批 → `command_patterns_allow` 累积） | packages/node + hub | **A** | **待互审（2026-11-09，V5 43/43）** | 审批卡批准"记住前缀"后，同类命令免批；模式表每节点可编辑 |
-| P1-3 | 自述注入：自由文本按不可信包裹 + **审计对账自动降级**（自述只读但审计见写 → 降级+告警） | packages/hub | **A** | 待认领 | nodes() 返回的自述带不可信标记；构造只读自述+写操作 → 自动降级触发 |
+| P1-3 | 自述注入：自由文本按不可信包裹 + **审计对账自动降级**（自述只读但审计见写 → 降级+告警） | packages/hub | **A** | **待互审（2026-11-09，V5 53/53）** | nodes() 返回的自述带不可信标记；构造只读自述+写操作 → 自动降级触发 |
 | P1-4 | 版本协商握手（hello 带 version+capability flags；低于最低版禁用相关工具并 GUI 提示） | packages/hub + node | **A** | **待互审（2026-11-09，V5 44/44）** | 降级模拟旧 node 入池 → exec 禁用、fs 仍可用、提示文案出现 |
 | P1-5 | 审计哈希链：node JSONL 链式哈希 + hub 定期拉取锚定；result hash = sha256(stdout+stderr+exit) | packages/node + hub | **A** | **待互审（2026-11-09，V5 48/48）** | 篡改任一条历史日志 → 链校验失败可检出 |
 | P1-6 | `mdp node stop` 进程树管理：PID 文件 + `taskkill /T`；`mdp hub stop` 同构 | apps/cli + packages/node | **A** | **待互审（2026-11-09，V5 45/45）** | stop 后无孤儿（netstat 验证）、hub 显示离线；**直接 node 调用无孤儿、npm 包装链有孤儿**——实现注释引用 verification-p0.md §6 |

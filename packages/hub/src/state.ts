@@ -6,14 +6,17 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import type { NodeManifest, OverlayConfig } from '@mdp/contract';
+import type { NodeManifest, OverlayConfig, AuditRecord } from '@mdp/contract';
+
+/** 自述对账用的审计记录（P1-3）：只留对账所需字段，最近 50 条 */
+export type NodeAuditRecord = Pick<AuditRecord, 'seq' | 'kind' | 'op' | 'cmd' | 'ts'>;
 
 export const defaultHome = (): string => process.env['MDP_HOME'] ?? path.join(os.homedir(), '.mdp');
 
 export interface HubDbShape {
-  nodes: Record<string, { manifest: NodeManifest; last_seen: string; overlay?: OverlayConfig }>;
-  /** P1-5 审计锚定：hub 已验证到的链尾（broken 非空 = 校验失败，含断点详情） */
-  audit?: Record<string, { last_seq: number; last_hash: string; broken?: string }>;
+  nodes: Record<string, { manifest: NodeManifest; last_seen: string; overlay?: OverlayConfig; degraded?: { reason: string; at: string } }>;
+  /** P1-5 审计锚定：hub 已验证到的链尾（broken 非空 = 校验失败，含断点详情）；recent 供自述对账 */
+  audit?: Record<string, { last_seq: number; last_hash: string; broken?: string; recent?: NodeAuditRecord[] }>;
 }
 
 export const loadHubDb = (home: string): HubDbShape => {

@@ -210,8 +210,9 @@ export class Conn {
         this.manifest = manifest;
         this.node_id = manifest.node_id;
         this.hub.nodes.set(this.node_id, this);
-        // 入册持久化（P0 write-through）
-        this.hub.opts.db.nodes[this.node_id] = { manifest, last_seen: new Date().toISOString() };
+        // 入册持久化（P0 write-through）；**保留既有 overlay/degraded**——重报 manifest（P1-3）不得抹掉 hub 侧状态
+        const prevRec = this.hub.opts.db.nodes[this.node_id];
+        this.hub.opts.db.nodes[this.node_id] = { ...(prevRec ?? {}), manifest, last_seen: new Date().toISOString() };
         saveHubDb(this.hub.opts.home, this.hub.opts.db);
         this.hub.opts.onLog(`节点上线：${manifest.display_name} (${this.node_id})，工作区 ${manifest.workspaces.length} 个`);
         const ov = this.hub.opts.getOverlay?.(this.node_id);
