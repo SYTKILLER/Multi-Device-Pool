@@ -6,12 +6,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import type { NodeManifest } from '@mdp/contract';
+import type { NodeManifest, OverlayConfig } from '@mdp/contract';
 
 export const defaultHome = (): string => process.env['MDP_HOME'] ?? path.join(os.homedir(), '.mdp');
 
 export interface HubDbShape {
-  nodes: Record<string, { manifest: NodeManifest; last_seen: string }>;
+  nodes: Record<string, { manifest: NodeManifest; last_seen: string; overlay?: OverlayConfig }>;
 }
 
 export const loadHubDb = (home: string): HubDbShape => {

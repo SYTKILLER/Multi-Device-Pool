@@ -1,11 +1,12 @@
 /**
  * Hub 核心：MCP JSON-RPC 分发 + 工具路由 + 信封裁决（01 §4.3 错误分类学的 hub 侧落地）。
  */
-import type { ResultEnvelope } from '@mdp/contract';
+import type { ResultEnvelope, OverlayConfig } from '@mdp/contract';
+import { STANDARD } from '@mdp/contract';
 import { NodeProtocolServer, type NodeHandle } from './nodeproto.js';
 import { HubJobs, type HubJob } from './jobs.js';
 import { TOOL_DEFS } from './mcp-tools.js';
-import type { HubDbShape } from './state.js';
+import { saveHubDb, type HubDbShape } from './state.js';
 
 export interface HubOptions {
   home: string;
@@ -41,9 +42,40 @@ export class Hub {
         this.jobs.finish(jobId, env);
         this.log(`job ${jobId} 终态：${env.status}（exit=${env.result?.exit ?? '-'})`);
       },
+      getOverlay: (nodeId) => this.getOverlay(nodeId),
     });
     this.jobs = new HubJobs((job) => this.#continueJob(job));
     this.nodeServer.startHeartbeat();
+  }
+
+  /** 取节点 overlay；首次 hello（db 已注册）懒创建 standard 预设（P1-1，01 §3.2） */
+  getOverlay(nodeId: string): OverlayConfig | undefined {
+    const rec = this.opts.db.nodes[nodeId];
+    if (!rec) return undefined;
+    if (!rec.overlay) {
+      const ov: OverlayConfig = { ...STANDARD, mode: 'standard', path_domains: rec.manifest.workspaces.map((w) => w.path), epoch: 1 };
+      rec.overlay = ov;
+      saveHubDb(this.opts.home, this.opts.db);
+      this.log(`overlay 初始化：${rec.manifest.display_name} → standard（域 ${ov.path_domains.length} 个）`);
+    }
+    return rec.overlay;
+  }
+
+  /** overlay 变更：合并 → 持久化 → 在线节点即时推送（01 §3.2） */
+  updateOverlay(nodeId: string, patch: Partial<OverlayConfig>): OverlayConfig | undefined {
+    const rec = this.opts.db.nodes[nodeId];
+    if (!rec) return undefined;
+    const cur = this.getOverlay(nodeId)!;
+    const next: OverlayConfig = {
+      ...cur,
+      ...patch,
+      levels: { ...cur.levels, ...(patch.levels ?? {}) },
+    };
+    rec.overlay = next;
+    saveHubDb(this.opts.home, this.opts.db);
+    this.nodeServer.pushOverlay(nodeId, next);
+    this.log(`overlay 更新：${rec.manifest.display_name} → fs=${next.levels.fs} exec=${next.levels.exec} gate=${next.content_gate} 白名单 ${next.command_patterns_allow.length} 条`);
+    return next;
   }
 
   get nodePort(): number {
@@ -100,6 +132,11 @@ export class Hub {
       workspaces: h.manifest.workspaces,
       native_enforcement: h.manifest.native_enforcement,
       self_description: h.manifest.self_description,
+      // overlay 摘要（01 §3.3 注入大脑：节点侧闸门当前状态，hub 为事实源）
+      overlay: (() => {
+        const o = this.getOverlay(h.node_id);
+        return o ? { levels: o.levels, content_gate: o.content_gate, path_domains: o.path_domains.length, allowlist: o.command_patterns_allow.length } : undefined;
+      })(),
       rtt_ms: h.rtt_ms,
       unconsumed_jobs: this.jobs.unconsumedFor(h.node_id),
     }));

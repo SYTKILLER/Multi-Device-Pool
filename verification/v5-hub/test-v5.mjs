@@ -291,6 +291,47 @@ const attachResult = await new Promise((resolve) => {
 attachProc.kill();
 ok('T34 attach 桥：stdio ↔ HTTP 透传 initialize', attachResult?.result?.serverInfo?.name === 'mdp', JSON.stringify(attachResult)?.slice(0, 200));
 
+// ---------- P1-1 overlay 全量（等级轴 / 路径域 / 夹紧 / 大小写折叠 / 即时推送） ----------
+const outsideDir = path.join(work, 'outside');
+fs.mkdirSync(outsideDir, { recursive: true });
+fs.writeFileSync(path.join(outsideDir, 'secret.txt'), 'outside-content');
+let junctionOk = false;
+try { fs.symlinkSync(outsideDir, path.join(fixture, 'leak'), 'junction'); junctionOk = fs.existsSync(path.join(fixture, 'leak')); } catch { /* 非 NTFS 等 */ }
+if (junctionOk) {
+  const p1a = await callTool('fs', { node: 'pc-test', op: 'read', path: 'workspace:repo/leak/secret.txt' });
+  ok('T35 symlink 逃逸拒绝（红队 P1-11）', p1a.status === 'denied' && p1a.error?.class === 'permission' && /逃逸|超出/.test(p1a.error?.message ?? ''), JSON.stringify(p1a).slice(0, 200));
+  fs.rmSync(path.join(fixture, 'leak'), { recursive: true, force: true });
+} else {
+  console.log('SKIP  T35（junction 创建失败）');
+}
+
+const p1b = await callTool('fs', { node: 'pc-test', op: 'read', path: 'workspace:repo/../../Windows/win.ini' });
+ok('T36 `..` 相对路径穿越拒绝', p1b.status === 'denied' && p1b.error?.class === 'permission', JSON.stringify(p1b).slice(0, 200));
+
+const upperForm = fixture.toUpperCase() + '\\P11CASE.TXT';
+const p1c = await callTool('fs', { node: 'pc-test', op: 'write', path: upperForm, content: 'case-fold' });
+ok('T37 Windows 大小写折叠：全大写形态路径仍判定在域内', p1c.status === 'ok' && JSON.parse(p1c.result.stdout).written === 9, JSON.stringify(p1c).slice(0, 200));
+
+const patchOverlay = (body) => fetch(`${MCP}/nodes/${NODE_ID}/overlay`, { method: 'PATCH', headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+const g1 = await callTool('exec', { node: 'pc-test', cmd: `echo hi`, cwd: 'workspace:repo' });
+await patchOverlay({ levels: { exec: 'deny' } });
+const g2 = await callTool('exec', { node: 'pc-test', cmd: `echo hi`, cwd: 'workspace:repo' });
+await patchOverlay({ levels: { exec: 'allowlist' }, command_patterns_allow: ['node -p'] });
+const g3 = await callTool('exec', { node: 'pc-test', cmd: `node -p "1+1"`, cwd: 'workspace:repo' });
+const g4 = await callTool('exec', { node: 'pc-test', cmd: `echo not-on-list`, cwd: 'workspace:repo' });
+await patchOverlay({ levels: { fs: 'read-only', exec: 'workspaces' } });
+const g5 = await callTool('fs', { node: 'pc-test', op: 'write', path: 'workspace:repo/ro.txt', content: 'x' });
+const g6 = await callTool('fs', { node: 'pc-test', op: 'read', path: 'workspace:repo/中文说明.txt' });
+await patchOverlay({ levels: { fs: 'workspaces' } });
+const g7 = await callTool('exec', { node: 'pc-test', cmd: `echo restored`, cwd: 'workspace:repo' });
+ok('T38 overlay REST 编辑 + 即时推送全链', g1.status === 'ok' && g2.status === 'denied' && /exec=deny/.test(g2.error?.message ?? '')
+  && g3.status === 'ok' && g3.result.stdout.trim() === '2' && g4.status === 'denied' && /allowlist/.test(g4.error?.message ?? '')
+  && g5.status === 'denied' && /read-only/.test(g5.error?.message ?? '') && g6.status === 'ok'
+  && g7.status === 'ok',
+  JSON.stringify({ g1: g1.status, g2: g2.status + (g2.error?.message ?? ''), g3: g3.status, g4: g4.error?.message, g5: g5.error?.message, g6: g6.status, g7: g7.status }));
+const ovGet = await (await fetch(`${MCP}/nodes/${NODE_ID}/overlay`, { headers: { Authorization: `Bearer ${TOKEN}` } })).json();
+ok('T39 overlay GET 回读（hub 为事实源）', ovGet.overlay?.levels?.fs === 'workspaces' && Array.isArray(ovGet.overlay?.path_domains), JSON.stringify(ovGet.overlay?.levels));
+
 // ---------- 收尾 ----------
 hubProc.kill();
 nodeProc.kill('SIGKILL');

@@ -5,7 +5,7 @@
  */
 import net from 'node:net';
 import { createHash, verify as cryptoVerify, createPublicKey, type KeyObject } from 'node:crypto';
-import type { NodeManifest, ResultEnvelope, JournalVerdictDetail } from '@mdp/contract';
+import type { NodeManifest, OverlayConfig, ResultEnvelope, JournalVerdictDetail } from '@mdp/contract';
 import { saveHubDb, type HubDbShape } from './state.js';
 
 const canonicalJson = (v: unknown): string => {
@@ -44,6 +44,8 @@ export interface NodeServerOptions {
   onReconciled?: (nodeId: string, verdicts: JournalVerdictDetail[]) => void;
   /** 审批续跑的结果回注：call_result 不在 pending（原调用已应答 needs_approval）但带 job_id */
   onJobResult?: (jobId: string, env: ResultEnvelope) => void;
+  /** hello 时取该节点 overlay 随 welcome 下发（P1-1：hub 是 overlay 唯一事实源） */
+  getOverlay?: (nodeId: string) => OverlayConfig | undefined;
 }
 
 export class NodeProtocolServer {
@@ -110,6 +112,14 @@ export class NodeProtocolServer {
       this.pending.set(callId, pending);
       conn.send({ t: 'call', call_id: callId, kind, params });
     });
+  }
+
+  /** overlay 即时推送（01 §3.2：hub 下发 → 节点即时生效；在跑 job 跑完为止） */
+  pushOverlay(nodeId: string, overlay: OverlayConfig): boolean {
+    const conn = this.nodes.get(nodeId);
+    if (!conn) return false;
+    conn.send({ t: 'overlay', overlay });
+    return true;
   }
 
   /** 断线重连后的对账入口（01 §4.3：hub 重连节点先对账，再决定续报/判死） */
@@ -202,7 +212,8 @@ export class Conn {
         this.hub.opts.db.nodes[this.node_id] = { manifest, last_seen: new Date().toISOString() };
         saveHubDb(this.hub.opts.home, this.hub.opts.db);
         this.hub.opts.onLog(`节点上线：${manifest.display_name} (${this.node_id})，工作区 ${manifest.workspaces.length} 个`);
-        this.send({ t: 'welcome', epoch: 1 });
+        const ov = this.hub.opts.getOverlay?.(this.node_id);
+        this.send(ov ? { t: 'welcome', epoch: 1, overlay: ov } : { t: 'welcome', epoch: 1 });
         // 重连对账：未决调用逐条裁决（01 §4.3）
         if (this.hub.pending.size > 0) this.hub.reconcile(this.node_id, this);
         return;

@@ -82,6 +82,18 @@
 
 **真实 OS 睡眠/唤醒演练**（TCP 静默死 + power-resume 事件）仍待用户协助（需要真的合盖一台笔记本）。
 
+---
+
+## P1 开发验证（双机并行，看板 docs/p1-board.md）
+
+### P1-1 overlay 全量 ✅（2026-11-09，A 机，V5 40/40）
+
+- **等级轴实装**（contract `LEVEL_ORDER`/`levelAtLeast`/`STANDARD` 预设）：fs 读类 ≥ read-only、写类 ≥ workspaces（allowlist 轴对 fs 与 workspaces 同义——写仍限路径域）；exec ≥ workspaces 需 cwd 在路径域、= allowlist 时命令须命中学习式白名单。
+- **overlay 归 hub 单一事实源**：hello 懒创建 standard 预设（域=该节点工作区）随 welcome 下发；`PATCH /nodes/:id/overlay` 合并持久化 + **在线节点即时推送**（节点 `overlay` 帧即时生效，01 §3.2）；`nodes()` 摘要带 overlay 状态。
+- **路径域硬化**（红队 P1-11）：realpath 判定 + 符号链接逃逸拒绝（junction 实测）+ `..` 穿越拒绝（词法折叠后域检查）+ **Windows 大小写折叠**。
+- **V5 新增 T35–T39**：symlink 逃逸 / `..` 穿越 / 全大写形态路径写放行（折叠）/ overlay REST 编辑→exec=deny 即时拒→allowlist 白名单命中放行未命中拒→fs=read-only 写拒读放行→还原 workspaces / GET 回读。
+- 过程回归修复：重构初版把 busy 折进 deny——已恢复 01 §4.3 独立 `busy` 分类（`failed + class:busy`），T11 守住。
+
 ## V5 / V6
 
 ### V5 · hub/node 最小实现与集成验收 ◐（2026-11-08）

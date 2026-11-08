@@ -156,9 +156,22 @@ export class NodeAgent {
 
   async #handle(msg: Record<string, unknown>): Promise<void> {
     switch (msg['t']) {
-      case 'welcome':
+      case 'welcome': {
         this.log(`hub 欢迎：epoch=${msg['epoch']}`);
+        // P1-1：hub 下发 overlay（hub 是唯一事实源），即时生效
+        if (msg['overlay']) {
+          this.overlay.setOverlay(msg['overlay'] as Parameters<Overlay['setOverlay']>[0]);
+          const l = this.overlay.config.levels;
+          this.log(`overlay 生效：fs=${l.fs} exec=${l.exec} transfer=${l.transfer} 域=${this.overlay.config.path_domains.length || this.manifest.workspaces.length} 个`);
+        }
         return;
+      }
+      case 'overlay': {
+        this.overlay.setOverlay(msg['overlay'] as Parameters<Overlay['setOverlay']>[0]);
+        const l = this.overlay.config.levels;
+        this.log(`overlay 推送即时生效：fs=${l.fs} exec=${l.exec} transfer=${l.transfer}`);
+        return;
+      }
       case 'ping':
         this.#send({ t: 'pong', ts: msg['ts'] });
         return;
@@ -194,30 +207,23 @@ export class NodeAgent {
     try {
       if (kind === 'exec' || kind === 'job_submit') {
         const cmd = String(params['cmd'] ?? '');
-        const dirRes = this.overlay.resolveDir(params['cwd'] as string | undefined);
-        if (!dirRes.ok) return this.#send({ t: 'call_result', call_id: callId, job_id: jobId, envelope: denyEnvelope('permission', dirRes.message) });
-        const gate = this.overlay.contentGate(cmd);
-        if (gate.kind === 'deny') return this.#send({ t: 'call_result', call_id: callId, job_id: jobId, envelope: denyEnvelope('permission', gate.message) });
-        if (gate.kind === 'approval') {
-          if (approved) {
-            this.log(`已批准命令继续执行：${cmd.slice(0, 60)}`);
-          } else {
-            // 内容闸命中 → 转审批，不 journal（无副作用发生；批准后从 received 起走正常路径）
-            return this.#send({ t: 'call_result', call_id: callId, job_id: jobId, envelope: {
-              status: 'needs_approval', node_id: this.manifest.node_id, call_id: callId, ts_hub: 0,
-              job: { job_id: jobId ?? '', state: 'needs_approval' },
-              error: { class: 'permission', retryable: false, message: gate.message },
-            } });
-          }
-        }
-        const busy = this.overlay.busyCheck(dirRes.ws.path);
-        if (busy) return this.#send({ t: 'call_result', call_id: callId, job_id: jobId, envelope: {
+        // P1-1 全量判定链：等级轴 → cwd 域夹紧 → busy → 内容闸/学习式白名单（01 §3.2）
+        const verdict = this.overlay.checkExec(cmd, params['cwd'] as string | undefined, approved);
+        if (verdict.kind === 'deny') return this.#send({ t: 'call_result', call_id: callId, job_id: jobId, envelope: denyEnvelope('permission', verdict.message) });
+        if (verdict.kind === 'busy') return this.#send({ t: 'call_result', call_id: callId, job_id: jobId, envelope: {
           status: 'failed', node_id: this.manifest.node_id, call_id: callId, ts_hub: 0,
-          error: { class: 'busy', retryable: false, message: busy },
+          error: { class: 'busy', retryable: false, message: verdict.message },
         } });
-
+        if (verdict.kind === 'approval') {
+          // 内容闸命中 → 转审批，不 journal（无副作用发生；批准后从 received 起走正常路径）
+          return this.#send({ t: 'call_result', call_id: callId, job_id: jobId, envelope: {
+            status: 'needs_approval', node_id: this.manifest.node_id, call_id: callId, ts_hub: 0,
+            job: { job_id: jobId ?? '', state: 'needs_approval' },
+            error: { class: 'permission', retryable: false, message: verdict.message },
+          } });
+        }
         const spec: ExecSpec = {
-          cmd, dir: dirRes.dir,
+          cmd, dir: verdict.dir!,
           shell: params['shell'] as string | undefined,
           timeout_ms: params['timeout_ms'] as number | undefined,
         };
@@ -250,6 +256,19 @@ export class NodeAgent {
 
       if (kind === 'fs') {
         const op = String(params['op'] ?? '');
+        // P1-1：fs 等级轴先判（deny/read-only/workspaces），再路径域，再 busy
+        const lvl = this.overlay.checkFsLevel(op);
+        if (lvl.kind === 'deny') return this.#send({ t: 'call_result', call_id: callId, job_id: jobId, envelope: denyEnvelope('permission', lvl.message) });
+        if (op === 'write') {
+          const r = this.overlay.resolveFsPath(String(params['path'] ?? ''));
+          if (r.ok) {
+            const busy = this.overlay.busyCheck(r.ws.path);
+            if (busy) return this.#send({ t: 'call_result', call_id: callId, job_id: jobId, envelope: {
+              status: 'failed', node_id: this.manifest.node_id, call_id: callId, ts_hub: 0,
+              error: { class: 'busy', retryable: false, message: busy },
+            } });
+          }
+        }
         const outcome = fsOp(this.overlay, op, params as never);
         if (!outcome.ok) return this.#send({ t: 'call_result', call_id: callId, job_id: jobId, envelope: denyEnvelope('permission', outcome.error ?? 'fs 被拒绝') });
         // 写类 fs 有副作用：journal 覆盖（01 §4.3）；读类跳过（允许透明重试）

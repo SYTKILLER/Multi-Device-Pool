@@ -64,7 +64,27 @@ export const startMcpHttp = (hub: Hub, opts: McpHttpOptions): http.Server => {
     }
 
     if (req.url === '/nodes' && req.method === 'GET') {
-      return json(res, 200, hub.nodesSnapshot()); // nodesSnapshot 已含 {nodes:[...]}
+      return json(res, 200, hub.nodesSnapshot());
+    }
+
+    // overlay 编辑面（P1-1；GUI 骨架落地前的 GUI 代理，令牌必需 01 §7）
+    const ov = /^\/nodes\/([\w-]+)\/overlay$/.exec(req.url ?? '');
+    if (ov) {
+      const nodeId = ov[1]!;
+      if (req.method === 'GET') {
+        const overlay = hub.getOverlay(nodeId);
+        return overlay ? json(res, 200, { node_id: nodeId, overlay }) : json(res, 404, { error: `池内无节点 ${nodeId}` });
+      }
+      if (req.method === 'PATCH') {
+        const chunks: Buffer[] = [];
+        for await (const c of req) chunks.push(c as Buffer);
+        let patch: Record<string, unknown>;
+        try { patch = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>; } catch {
+          return json(res, 400, { error: 'PATCH body 不是合法 JSON' });
+        }
+        const overlay = hub.updateOverlay(nodeId, patch as never);
+        return overlay ? json(res, 200, { ok: true, node_id: nodeId, overlay }) : json(res, 404, { error: `池内无节点 ${nodeId}` });
+      }
     }
 
     json(res, 404, { error: `未知端点 ${req.method} ${req.url}` });
