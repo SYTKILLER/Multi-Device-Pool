@@ -109,6 +109,14 @@
 - **V5 T43**：0.0.9 旧节点入池 → exec 拒（提示含"低于 exec 最低"）、fs read 照常、nodes() 特性状态正确。
 - 插曲（记录在案）：快照重复字段被 tsc 抓出，但 `noEmitOnError` 未开导致 JS 照常产出、测试先绿——**教训：构建错误必须零容忍，verify 链前置干净构建检查**（已在本轮 verify 口径执行）。
 
+### P1-5 审计哈希链 ✅（2026-11-09，A 机，V5 48/48）
+
+- **contract/audit.ts 为唯一算法源**（防 node 写入与 hub 校验漂移）：`resultHash = sha256(stdout\0stderr\0exit)`（01 §9）+ `auditHash = sha256(固定序字段串)`（避免 JSON 键序歧义）+ `verifyAuditChain`（prev 链接 + hash 重算）。
+- **node**：`<home>/audit.jsonl` append-only JSONL；exec 完成、fs write、后台 job 终态（onDone 携带 outcome）三路入链；启动时 `#loadTail` 容忍撕裂行（从最后好点续链）。
+- **hub**：`MDP_AUDIT_PULL_MS`（默认 30s，测试 1s）定期 `audit_pull`；**全链从创世重验**——只验增量会漏回溯性篡改（设计取舍记录在案，P1 规模 O(n) 可接受）；锚定 `{last_seq, last_hash, broken}` 入 hub.db；`nodes()` 返回 `audit{last_seq, verified, broken}`（GUI 告警事实源）；节点审计文件回退（last_seq 倒退）也判 broken。
+- **V5 T45a/b/c**：锚定通过（seq≥5）→ **回溯篡改历史 exec 记录被检出**（broken 含"篡改"与断点 seq）→ 还原后校验恢复通过。
+- 语义边界：审计只记**已发生**的执行（被杀未完成无记录，由 journal 负责未完成语义）；denied/approval 未执行不入链。
+
 ### P1-6 mdp node stop 进程树管理 ✅（2026-11-09，A 机，V5 45/45）
 
 - **apps/cli（@mdp/cli，bin `mdp`）**：`mdp node stop|status` / `mdp hub stop|status`；node agent 启动即写 `<home>/node.pid`（自持 PID 文件），hub 用既有 hub-info.json 的 pid。陈旧 PID 清理 + 存活探测（tasklist / `process.kill(0)`）。

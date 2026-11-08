@@ -12,10 +12,12 @@ import type { NodeManifest, ResultEnvelope } from '@mdp/contract';
 import type { NodeConfig, WorkspaceConfig } from './config.js';
 import { Overlay } from './overlay.js';
 import { Journal } from './journal.js';
+import { AuditLog } from './audit.js';
 import { runExec, defaultShell, type ExecSpec } from './exec.js';
 import { fsOp } from './fsops.js';
 import { NodeJobs } from './node-jobs.js';
 import { canonicalJson, type NodeIdentity } from './identity.js';
+import { resultHash } from '@mdp/contract';
 
 export interface AgentOptions {
   home: string;
@@ -34,6 +36,7 @@ export class NodeAgent {
   readonly manifest: NodeManifest;
   readonly overlay: Overlay;
   readonly journal: Journal;
+  readonly audit: AuditLog;
   readonly jobs: NodeJobs;
   private socket?: net.Socket;
   private connected = false;
@@ -45,9 +48,11 @@ export class NodeAgent {
     this.log = opts.onLog ?? ((l) => console.log(`[node] ${l}`));
     this.overlay = new Overlay(opts.config.workspaces);
     this.journal = new Journal(path.join(opts.home, 'jobs')); // 01 §4.3：journal 持久化于 ~/.mdp/jobs/
+    this.audit = new AuditLog(opts.home); // P1-5：审计链 <home>/audit.jsonl
     this.jobs = new NodeJobs(opts.home);
-    // 后台 job 终态上报：hub 侧 job_status 依赖（call_id 无对应 pending → 按 job_id 回注）
-    this.jobs.onDone = (job) => {
+    // 后台 job 终态上报：hub 侧 job_status 依赖（call_id 无对应 pending → 按 job_id 回注）+ 审计入链
+    this.jobs.onDone = (job, outcome) => {
+      this.audit.append({ call_id: job.job_id, kind: 'job_submit', cmd: job.cmd, exit: job.exit, result_hash: resultHash(outcome?.stdout ?? '', outcome?.stderr ?? '', job.exit) });
       this.#send({ t: 'call_result', call_id: `bg-${job.job_id}`, job_id: job.job_id, envelope: {
         status: 'ok', node_id: this.manifest.node_id, call_id: `bg-${job.job_id}`, ts_hub: 0,
         result: { exit: job.exit, stdout: '', stderr: '', truncated: false },
@@ -181,6 +186,10 @@ export class NodeAgent {
         this.#send({ t: 'reconcile_result', verdicts: this.journal.reconcile(ids) });
         return;
       }
+      case 'audit_pull':
+        // P1-5：hub 定期锚定拉取（读类，无副作用）
+        this.#send({ t: 'audit_records', records: this.audit.readSince(Number(msg['since'] ?? 0)), last_seq: this.audit.seq });
+        return;
       case 'job_continue': {
         // 审批通过：hub 把原始 call 原文回传；approved=true 表示内容闸已由人工放行（deny/busy 检查仍然执行）
         await this.#dispatch(msg['call'] as Record<string, unknown>, msg['job_id'] as string | undefined, true);
@@ -244,6 +253,8 @@ export class NodeAgent {
         const outcome = await runExec(spec);
         this.jobs.recordSync(callId, outcome);
         this.journal.mark(callId, 'finished', { exit: outcome.exit, output_ref: `job:${callId}#0` });
+        // P1-5 审计：执行完成即入链（含超时/失败；被杀未完成无记录——journal 管未完成，审计管已发生）
+        this.audit.append({ call_id: callId, kind: 'exec', cmd, exit: outcome.exit, result_hash: resultHash(outcome.stdout, outcome.stderr, outcome.exit) });
         const baseResult = { exit: outcome.exit, stdout: outcome.stdout, stderr: outcome.stderr, truncated: outcome.truncated, output_ref: `job:${callId}#0` };
         const env: ResultEnvelope = outcome.timedOut
           ? { status: 'timeout', node_id: this.manifest.node_id, call_id: callId, ts_hub: 0,
@@ -272,11 +283,12 @@ export class NodeAgent {
         }
         const outcome = fsOp(this.overlay, op, params as never);
         if (!outcome.ok) return this.#send({ t: 'call_result', call_id: callId, job_id: jobId, envelope: denyEnvelope('permission', outcome.error ?? 'fs 被拒绝') });
-        // 写类 fs 有副作用：journal 覆盖（01 §4.3）；读类跳过（允许透明重试）
+        // 写类 fs 有副作用：journal 覆盖（01 §4.3）+ 审计入链（P1-5）；读类跳过两者（允许透明重试）
         if (op === 'write') {
           this.journal.mark(callId, 'received');
           this.journal.mark(callId, 'started');
           this.journal.mark(callId, 'finished', { exit: 0 });
+          this.audit.append({ call_id: callId, kind: 'fs', cmd: String(params['path'] ?? ''), op: 'write', exit: 0, result_hash: resultHash(String(params['content'] ?? ''), '', 0) });
         }
         return this.#send({ t: 'call_result', call_id: callId, job_id: jobId, envelope: {
           status: 'ok', node_id: this.manifest.node_id, call_id: callId, ts_hub: 0,

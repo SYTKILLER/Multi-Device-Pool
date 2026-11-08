@@ -41,7 +41,7 @@ const hubBin = path.join(ROOT, 'packages', 'hub', 'dist', 'index.js');
 const nodeBin = path.join(ROOT, 'packages', 'node', 'dist', 'index.js');
 
 const hubProc = spawn(process.execPath, [hubBin, '--home', hubHome, '--port', String(mcpPort), '--node-port', String(nodePort)], {
-  env: { ...process.env, MDP_APPROVAL_TTL_MS: '4000', MDP_TTL_SWEEP_MS: '500', MDP_HEARTBEAT_MS: '3000' },
+  env: { ...process.env, MDP_APPROVAL_TTL_MS: '4000', MDP_TTL_SWEEP_MS: '500', MDP_HEARTBEAT_MS: '3000', MDP_AUDIT_PULL_MS: '1000' },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 const hubLog = [];
@@ -417,6 +417,33 @@ try {
 ok('T44 mdp node stop：PID 文件定位 + 按树杀 + hub 显示离线 + 无孤儿进程',
   stopOnline && stopPid > 0 && /进程树已终止/.test(cliOut) && stopState === false && !fs.existsSync(path.join(nodeHome3, 'node.pid')) && orphans === 0,
   JSON.stringify({ stopOnline, stopPid, cliOut: cliOut.trim().slice(0, 80), stopState, pidFileGone: !fs.existsSync(path.join(nodeHome3, 'node.pid')), orphans, log3: nodeLog3.slice(-2) }));
+
+// ---------- P1-5 审计哈希链 ----------
+await sleep(1800); // 至少一次锚定拉取（间隔 1s）
+const auditNode = async () => JSON.parse((await callTool('nodes', {})).result.stdout).nodes.find((n) => n.display_name === 'pc-test').audit;
+{
+  const a0 = await auditNode();
+  ok('T45a 审计锚定：链尾入 hub 且校验通过', a0.last_seq >= 5 && a0.verified === true, JSON.stringify(a0));
+}
+const auditFile = path.join(nodeHome, 'audit.jsonl');
+const origLines = fs.readFileSync(auditFile, 'utf8').split('\n').filter((l) => l.trim());
+const recs = origLines.map((l) => JSON.parse(l));
+const victim = recs.find((r) => r.kind === 'exec');
+const victimOrig = JSON.stringify(victim);
+victim.exit = victim.exit === 0 ? 1 : 0; // 回溯性篡改历史记录
+fs.writeFileSync(auditFile, recs.map((r) => JSON.stringify(r)).join('\n') + '\n');
+await sleep(1800);
+{
+  const a1 = await auditNode();
+  ok('T45b 篡改检出：全链重验发现历史记录被改', a1.verified === false && /篡改|断链/.test(a1.broken ?? ''), JSON.stringify(a1));
+}
+const restored = recs.map((r) => (r.seq === victim.seq ? JSON.parse(victimOrig) : r));
+fs.writeFileSync(auditFile, restored.map((r) => JSON.stringify(r)).join('\n') + '\n');
+await sleep(1800);
+{
+  const a2 = await auditNode();
+  ok('T45c 还原后链校验恢复通过', a2.verified === true, JSON.stringify(a2));
+}
 
 // ---------- 收尾 ----------
 hubProc.kill();

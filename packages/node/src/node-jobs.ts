@@ -24,8 +24,8 @@ export interface NodeJob {
 
 export class NodeJobs {
   readonly dir: string;
-  /** job 终态回调（agent 用来上报 hub；cancel 也触发） */
-  onDone?: (job: NodeJob) => void;
+  /** job 终态回调（agent 用来上报 hub 与写审计；cancel 也触发）；outcome 为终止时的输出 */
+  onDone?: (job: NodeJob, outcome: ExecOutcome) => void;
   #jobs = new Map<string, NodeJob>();
   #children = new Map<string, ChildProcess>();
 
@@ -102,17 +102,18 @@ export class NodeJobs {
       job.finished_at = new Date().toISOString();
       const outcome: ExecOutcome = { exit: null, stdout: decodeBuf(out, shell), stderr: decodeBuf(err, shell) + `\nspawn error: ${e.message}`, truncated: false, crash: e.message, duration_ms: 0 };
       job.output_file = persistOutput(this.dir, jobId, outcome);
-      this.onDone?.(job);
+      this.onDone?.(job, outcome);
     });
     child.on('close', (code) => {
       this.#children.delete(jobId);
-      if (job.state === 'cancelled') { this.onDone?.(job); return; } // cancel 已写状态
-      job.exit = code;
-      job.state = 'finished';
-      job.finished_at = new Date().toISOString();
-      const outcome: ExecOutcome = { exit: code, stdout: decodeBuf(out, shell), stderr: decodeBuf(err, shell), truncated: false, duration_ms: 0 };
-      job.output_file = persistOutput(this.dir, jobId, outcome);
-      this.onDone?.(job);
+      const outcome: ExecOutcome = { exit: job.state === 'cancelled' ? null : code, stdout: decodeBuf(out, shell), stderr: decodeBuf(err, shell), truncated: false, duration_ms: 0 };
+      if (job.state !== 'cancelled') {
+        job.exit = code;
+        job.state = 'finished';
+        job.finished_at = new Date().toISOString();
+        job.output_file = persistOutput(this.dir, jobId, outcome);
+      }
+      this.onDone?.(job, outcome);
     });
     return job;
   }

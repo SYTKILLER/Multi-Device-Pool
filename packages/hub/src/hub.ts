@@ -8,6 +8,7 @@ import { HubJobs, type HubJob } from './jobs.js';
 import { TOOL_DEFS } from './mcp-tools.js';
 import { saveHubDb, type HubDbShape } from './state.js';
 import { featureStatus } from './version.js';
+import { verifyAuditChain, AUDIT_GENESIS, type AuditRecord } from '@mdp/contract';
 
 export interface HubOptions {
   home: string;
@@ -44,9 +45,44 @@ export class Hub {
         this.log(`job ${jobId} 终态：${env.status}（exit=${env.result?.exit ?? '-'})`);
       },
       getOverlay: (nodeId) => this.getOverlay(nodeId),
+      onAuditRecords: (nodeId, records, lastSeq) => this.#onAuditRecords(nodeId, records, lastSeq),
     });
     this.jobs = new HubJobs((job) => this.#continueJob(job));
     this.nodeServer.startHeartbeat();
+    // P1-5：审计定期锚定（全链从创世重验——只验增量会漏回溯性篡改；P1 规模 O(n) 可接受）
+    this.#auditTimer = setInterval(() => this.#pullAudit(), Number(process.env['MDP_AUDIT_PULL_MS'] ?? 30000));
+    this.#auditTimer.unref?.();
+  }
+
+  #auditTimer?: NodeJS.Timeout;
+
+  #pullAudit(): void {
+    for (const nodeId of this.nodeServer.nodes.keys()) {
+      const conn = this.nodeServer.nodes.get(nodeId);
+      conn?.send({ t: 'audit_pull', since: 0 });
+    }
+  }
+
+  #onAuditRecords(nodeId: string, records: AuditRecord[], lastSeq: number): void {
+    if (!this.opts.db.audit) this.opts.db.audit = {};
+    const prev = this.opts.db.audit[nodeId];
+    // 连续性基准：有锚用锚尾；无锚从创世。节点 last_seq 回退（文件被重置）视为断链
+    if (prev && lastSeq < prev.last_seq) {
+      prev.broken = `节点审计文件回退（锚定 seq ${prev.last_seq}，节点 last_seq ${lastSeq}）`;
+      return;
+    }
+    const baseHash = prev && prev.last_seq > 0 ? prev.last_hash : AUDIT_GENESIS;
+    const v = verifyAuditChain(records, records.length > 0 && records[0]!.seq === 1 ? AUDIT_GENESIS : baseHash);
+    if (!v.ok) {
+      this.opts.db.audit[nodeId] = { ...(prev ?? { last_seq: 0, last_hash: AUDIT_GENESIS }), broken: `${v.reason}（@seq ${v.brokenAt}）` };
+      this.log(`审计链校验失败：${nodeId} → ${v.reason}（@seq ${v.brokenAt}）——节点标记 audit_broken`);
+    } else if (records.length > 0) {
+      const tail = records[records.length - 1]!;
+      this.opts.db.audit[nodeId] = { last_seq: tail.seq, last_hash: tail.hash };
+    } else if (prev) {
+      prev.broken = undefined;
+    }
+    saveHubDb(this.opts.home, this.opts.db);
   }
 
   /** 取节点 overlay；首次 hello（db 已注册）懒创建 standard 预设（P1-1，01 §3.2） */
@@ -100,6 +136,7 @@ export class Hub {
   }
 
   close(): void {
+    clearInterval(this.#auditTimer);
     this.jobs.close();
     this.nodeServer.close();
   }
@@ -165,6 +202,11 @@ export class Hub {
       self_description: h.manifest.self_description,
       // P1-4 版本协商状态（GUI 提示与 LLM 决策依据）；agent_version 已在上方基础字段
       features: featureStatus(h.manifest),
+      // P1-5 审计锚定状态（01 §9：审计篡改 → GUI 告警）
+      audit: (() => {
+        const a = this.opts.db.audit?.[h.node_id];
+        return a ? { last_seq: a.last_seq, verified: !a.broken, broken: a.broken } : { last_seq: 0, verified: true, broken: undefined };
+      })(),
       // overlay 摘要（01 §3.3 注入大脑：节点侧闸门当前状态，hub 为事实源）
       overlay: (() => {
         const o = this.getOverlay(h.node_id);

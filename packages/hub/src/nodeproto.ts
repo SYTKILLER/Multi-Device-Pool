@@ -5,7 +5,7 @@
  */
 import net from 'node:net';
 import { createHash, verify as cryptoVerify, createPublicKey, type KeyObject } from 'node:crypto';
-import type { NodeManifest, OverlayConfig, ResultEnvelope, JournalVerdictDetail } from '@mdp/contract';
+import type { NodeManifest, OverlayConfig, ResultEnvelope, JournalVerdictDetail, AuditRecord } from '@mdp/contract';
 import { saveHubDb, type HubDbShape } from './state.js';
 
 const canonicalJson = (v: unknown): string => {
@@ -46,6 +46,8 @@ export interface NodeServerOptions {
   onJobResult?: (jobId: string, env: ResultEnvelope) => void;
   /** hello 时取该节点 overlay 随 welcome 下发（P1-1：hub 是 overlay 唯一事实源） */
   getOverlay?: (nodeId: string) => OverlayConfig | undefined;
+  /** P1-5：audit_pull 的应答回注 */
+  onAuditRecords?: (nodeId: string, records: AuditRecord[], lastSeq: number) => void;
 }
 
 export class NodeProtocolServer {
@@ -222,6 +224,11 @@ export class Conn {
         const verdicts = (msg['verdicts'] as JournalVerdictDetail[]) ?? [];
         this.#reconcileVerdicts(verdicts);
         this.hub.opts.onReconciled?.(this.node_id, verdicts);
+        return;
+      }
+      case 'audit_records': {
+        const records = (msg['records'] as AuditRecord[]) ?? [];
+        this.hub.opts.onAuditRecords?.(this.node_id, records, Number(msg['last_seq'] ?? 0));
         return;
       }
       case 'call_result': {
