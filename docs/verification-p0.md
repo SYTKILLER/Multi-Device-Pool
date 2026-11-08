@@ -109,6 +109,12 @@
 - **V5 T43**：0.0.9 旧节点入池 → exec 拒（提示含"低于 exec 最低"）、fs read 照常、nodes() 特性状态正确。
 - 插曲（记录在案）：快照重复字段被 tsc 抓出，但 `noEmitOnError` 未开导致 JS 照常产出、测试先绿——**教训：构建错误必须零容忍，verify 链前置干净构建检查**（已在本轮 verify 口径执行）。
 
+### P1-6 mdp node stop 进程树管理 ✅（2026-11-09，A 机，V5 45/45）
+
+- **apps/cli（@mdp/cli，bin `mdp`）**：`mdp node stop|status` / `mdp hub stop|status`；node agent 启动即写 `<home>/node.pid`（自持 PID 文件），hub 用既有 hub-info.json 的 pid。陈旧 PID 清理 + 存活探测（tasklist / `process.kill(0)`）。
+- **按树杀**（kill.ts）：win32 `taskkill /PID <pid> /T /F`（TerminateProcess=SIGKILL 语义）；POSIX SIGTERM→3s 宽限→SIGKILL（进程组树杀需 spawn detached + `kill(-pid)`，P1 记录局限，Windows 为首要平台）。
+- **V5 T44**（复现 §6 孤儿场景形状）：cmd→npm→node 包装链启动 pc-stop → CLI stop → 断言进程树终止、hub 显示 offline、PID 文件清理、**全系统孤儿核查 = 0**。核查实现注意：`Get-CimInstance` 按命令行匹配时**必须排除检查进程自身 `$PID`**（首轮 orphans:1 系自匹配误报）。
+
 ### P1-7 / P1-10 互审 ✅（2026-11-09，A 机审 B 机交付）
 
 - **adapter-direct（P1-7）**：A 机 build + test 6/6 全绿；走查通过——`protocol.ts` 1KB 双向硬上限 + 严格 parse（proto/kind/role/name/id/ts 校验，红队输入限制）；`unicast.ts` reply 源地址校验（只信目标主机）+ 重试/超时/pending 守卫；`multicast.ts` 逐接口 `setMulticastInterface`+loopback、全接口加组（V3 强制约束）、TTL 自适应 sweeper + dedup。非阻塞 nit 已回写看板供 B 参考。
