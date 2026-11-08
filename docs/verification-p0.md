@@ -9,9 +9,9 @@
 |---|---|---|---|
 | V1 | ZCode 接入面（list_changed / MCP 审批） | ◐ | 静态：`autoRefresh` 默认开启、transport 支持 **stdio/http/sse**；动态：无头模式不加载工作区声明，需桌面端信任一次 |
 | V2 | PowerShell/cmd 中文编码 | ✅ | **chcp 65001 对管道输出无效**；`[Console]::OutputEncoding=UTF8` 前缀是唯一有效通路（stdout+stderr 双路） |
-| V3 | mDNS 局域网发现 | ◐ | 本机回环 PASS，但**必须显式绑定接口**（默认多播路由 EHOSTUNREACH）；跨机待第二台设备 |
+| V3 | mDNS 局域网发现 | ◐ | 本机回环 PASS，但**必须显式绑定接口**（默认多播路由 EHOSTUNREACH）；跨机 advertise 侧已就绪（2026-11-08 本机 WLAN 广播+回环 DISCOVERED ✓），B 侧 browse 待确认 |
 | V4 | journal 对账 | ✅ | 5/5 PASS：四场景裁决正确，原子写经受 SIGKILL |
-| V5 | ZCode/DSH 并挂 hub | ◐ | **2026-11-08：hub/node 最小版实现完成，同机双进程 35/35 PASS**（exec/fs 全链路 + 失败信封全分类 + 双 MCP 客户端隔离/审批合并）；真实 ZCode 桌面端一键步骎见文末 |
+| V5 | ZCode/DSH 并挂 hub | ◐ | **2026-11-08：hub/node 最小版实现完成，同机双进程 35/35 PASS**；**跨机实测同日 PASS**——第二台 Win10（pc2）入池，exec（42）/fs 中文写读逐字节一致，RTT 3-8ms；真实 ZCode 桌面端一键步骤见文末 |
 | V6 | DSH 多 MCP 热插拔 / 会话跨机回放 | ⬜ | 沿用 00 附录 B，P0 后半段 / P5 前 |
 
 ---
@@ -104,6 +104,8 @@
 5. journal 目录归位 `~/.mdp/jobs/`（01 §4.3）。
 
 **P0 验收对照（01 §10）**：同机双进程 exec/fs + 失败信封全分类 ✅。**P0 后半段余项**：GUI 骨架（审批 REST 已就位作其代理）、per-node 前缀组与 list_changed 推送（P1）。
+
+**跨机实测（2026-11-08，同日）**：第二台设备（Win10，`pc2`，node_id `ffdc6faf1638d552`）经 `npm run node -- --hub 192.168.1.42:7900 --name pc2 --ws repo=<路径>` 入池（RTT 3-8ms）。A 侧经 hub MCP 实测：exec `6*7`→`42`（信封完整）、fs 中文写/读逐字节一致（45 字节）、exec 中文经 PowerShell UTF-8 前缀（V2 结论在真第二台机器复现）。**工具坑**：Windows 版 curl 会把命令行参数按 ANSI 代码页（GBK）转码进请求体——带中文的 JSON 请求必须在 A 侧用 node fetch（或 `--data-binary @file`），已在指南 §5 记录；池传输本身字节无损（hexdump 取证：磁盘 U+FFFD 源自 curl 侧 GBK 转码，非 hub/node）。
 
 **待用户协助（约 2 分钟，真实 harness 闭环）**：
 > 1. 终端 `npm run hub`（写 `~/.mdp/hub-info.json`，默认端口 7800/7900）。

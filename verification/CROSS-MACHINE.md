@@ -68,17 +68,25 @@ node verification/v3-mdns/browse.mjs
 
 ## 5. 验证二：V5 延伸——跨机 exec/fs（在机器 A 上操作）
 
-**方式 a（快速，REST）**：
+> **⚠️ 工具坑（2026-11-08 跨机实测踩中）**：Windows 版 **curl 会把命令行参数按 ANSI 代码页（GBK）转码进请求体**——JSON 里带中文的 curl 示例会在 A 侧就变成 GBK 字节，hub 按 UTF-8 有损解码后落盘全是 U+FFFD。**带中文的请求一律用 node fetch（或 `curl --data-binary @文件`，文件以 UTF-8 落盘）**。ASCII 命令的 curl 不受影响。
+
+**方式 a（快速，node fetch 一把梭）**：
 
 ```bash
-# Windows Git Bash 读令牌：
-TOKEN=$(node -pe "JSON.parse(require('fs').readFileSync(require('os').homedir()+'/.mdp/hub-info.json','utf8')).token")
-curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7800/nodes | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).nodes.map(n=>n.display_name+':'+n.online).join(', ')"
-# 期望包含 pc2:true
-
-curl -s -X POST http://127.0.0.1:7800/mcp -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"exec","arguments":{"node":"pc2","cmd":"node -e \"console.log(1+1)\"","cwd":"workspace:repo"}}}'
-# 期望 status=ok 且 stdout 含 2（Windows 下机器 B 无 bash 时用 node/powershell 命令）
+node -e "
+const H={'Content-Type':'application/json',Authorization:'Bearer '+process.argv[1]};
+const call=(name,args)=>fetch('http://127.0.0.1:7800/mcp',{method:'POST',headers:H,
+  body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name,arguments:args}})}).then(r=>r.json()).then(j=>JSON.parse(j.result.content[0].text));
+(async()=>{
+  const n=await call('nodes',{});
+  console.log(JSON.parse(n.result.stdout).nodes.map(x=>x.display_name+':'+x.online).join(', '));  // 期望含 pc2:true
+  const e=await call('exec',{node:'pc2',cmd:'node -e \"console.log(6*7)\"',cwd:'workspace:repo'});
+  console.log(e.status, e.result.stdout);   // 期望 ok / 42
+  const w=await call('fs',{node:'pc2',op:'write',path:'workspace:repo/跨机测试.txt',content:'中文-abc'});
+  const r=await call('fs',{node:'pc2',op:'read',path:'workspace:repo/跨机测试.txt'});
+  console.log(JSON.parse(w.result.stdout).written, r.result.stdout);  // 期望 9 / 中文-abc
+})();
+" "$(node -pe "JSON.parse(require('fs').readFileSync(require('os').homedir()+'/.mdp/hub-info.json','utf8')).token")"
 ```
 
 **方式 b（真实 harness，V5 本体闭环）**：机器 A 桌面端 ZCode 打开仓库 → 信任根 `.mcp.json`（mdp = attach 桥）→ 会话里说"列出池内节点，在 pc2 上读 workspace:repo 下的目录并跑一条命令"。
