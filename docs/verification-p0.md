@@ -11,7 +11,7 @@
 | V2 | PowerShell/cmd 中文编码 | ✅ | **chcp 65001 对管道输出无效**；`[Console]::OutputEncoding=UTF8` 前缀是唯一有效通路（stdout+stderr 双路） |
 | V3 | mDNS 局域网发现 | ◐ | 本机回环 PASS，但**必须显式绑定接口**（默认多播路由 EHOSTUNREACH）；跨机待第二台设备 |
 | V4 | journal 对账 | ✅ | 5/5 PASS：四场景裁决正确，原子写经受 SIGKILL |
-| V5 | ZCode/DSH 并挂 hub | ⬜ | 依赖 hub 最小实现（P0 后半段） |
+| V5 | ZCode/DSH 并挂 hub | ◐ | **2026-11-08：hub/node 最小版实现完成，同机双进程 35/35 PASS**（exec/fs 全链路 + 失败信封全分类 + 双 MCP 客户端隔离/审批合并）；真实 ZCode 桌面端一键步骎见文末 |
 | V6 | DSH 多 MCP 热插拔 / 会话跨机回放 | ⬜ | 沿用 00 附录 B，P0 后半段 / P5 前 |
 
 ---
@@ -76,6 +76,37 @@
 
 **真实 OS 睡眠/唤醒演练**（TCP 静默死 + power-resume 事件）仍待用户协助（需要真的合盖一台笔记本）。
 
-## V5 / V6 ⬜
+## V5 / V6
 
-依赖 hub/node 最小实现，P0 后半段执行；DSH 侧沿用 00 附录 B 的未验证清单。
+### V5 · hub/node 最小实现与集成验收 ◐（2026-11-08）
+
+**交付**：`packages/hub`（@mdp/hub：节点协议端点 /mcp /nodes /jobs REST、审批 job + TTL、信封裁决、attach 桥）、`packages/node`（@mdp/node：overlay 三检 + journal + exec/fs + manifest 签名上报）、`@mdp/contract` 单元测试 6/6。脚本：`verification/v5-hub/test-v5.mjs`（`npm run v5`）。
+
+**测试（35/35 PASS，复跑稳定）**——同机双进程（hub daemon + node agent）+ 双 MCP 客户端并挂：
+
+| 块 | 覆盖 | 结果 |
+|---|---|---|
+| 接入 | initialize / tools/list 静态基线 7 工具 / nodes() manifest 摘要 | ✓ |
+| exec | UTF-8 中文 stdout+stderr（V2 通路端到端）、退出码透传 | ✓ |
+| **信封全分类** | ok / timeout / **denied(permission，永不重试)** / **failed(crash)** / **failed(busy，index.lock)** / **failed(offline)** / **unknown(network，禁止重发指引)** / needs_approval | ✓ 全分类 |
+| 审批 | needs_approval → REST 批准 → 续跑 finished；**TTL 到期默认 deny** | ✓ |
+| 后台 job | submit 即回 / running 期增量 output / status / cancel | ✓ |
+| journal | 节点 SIGKILL 在途调用 → unknown + journal 停在 started（对账依据）；重启同 node_id 自动重连恢复 | ✓ |
+| **V5 本体** | 双 MCP 客户端并发互不串扰；A 触发的审批卡 B 可见、单次批准双侧读到终态（审批合并） | ✓ |
+| 安全 | 无令牌 401（红队 P0-3）；fs 越界 overlay 拒绝（路径域 + 符号链接逃逸） | ✓ |
+| attach 桥 | stdio ↔ HTTP 透传 initialize | ✓ |
+
+**过程中发现并修复的实现缺陷（记录在案）**：
+1. `/nodes` REST 双重包裹 `{nodes:{nodes:[…]}}` → 摘掉外层。
+2. `job_continue` 续跑时节点重新过内容闸又转审批 → continue 帧带 approved 标记，人工放行仅跳过 approval（deny/busy 检查保留）。
+3. job_cancel 竞态：hub 乐观落地 cancelled，节点 job_update 覆盖确认。
+4. Ed25519 验签必须 `createPublicKey({key: der, format:'der', type:'spki'})`，裸 DER Buffer 会 DECODER 报错。
+5. journal 目录归位 `~/.mdp/jobs/`（01 §4.3）。
+
+**P0 验收对照（01 §10）**：同机双进程 exec/fs + 失败信封全分类 ✅。**P0 后半段余项**：GUI 骨架（审批 REST 已就位作其代理）、per-node 前缀组与 list_changed 推送（P1）。
+
+**待用户协助（约 2 分钟，真实 harness 闭环）**：
+> 1. 终端 `npm run hub`（写 `~/.mdp/hub-info.json`，默认端口 7800/7900）。
+> 2. 桌面端 ZCode 打开本仓库 → 首次会话信任根 `.mcp.json`（mdp = attach 桥，自动读令牌）→ 直接说"列出池内节点并在 pc-test 上跑 `echo hello`"。工具名 `mcp__mdp__nodes / exec / fs / job_*`。
+
+**真实第二台机器**：与 V3 余项合并——hub 起于主机，子机 `npm run node -- --hub <主机IP>:7900 --name pc2 --ws repo=<路径>`（mDNS 自动发现 hub 为 P1 项，v1 先手输）。

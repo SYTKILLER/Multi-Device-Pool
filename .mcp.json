@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "mdp": {
+      "command": "node",
+      "args": ["packages/hub/dist/index.js", "attach"],
+      "env": {}
+    }
+  }
+}
