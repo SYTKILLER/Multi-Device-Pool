@@ -9,9 +9,9 @@
 |---|---|---|---|
 | V1 | ZCode 接入面（list_changed / MCP 审批） | ◐ | 静态：`autoRefresh` 默认开启、transport 支持 **stdio/http/sse**；动态：无头模式不加载工作区声明，需桌面端信任一次 |
 | V2 | PowerShell/cmd 中文编码 | ✅ | **chcp 65001 对管道输出无效**；`[Console]::OutputEncoding=UTF8` 前缀是唯一有效通路（stdout+stderr 双路） |
-| V3 | mDNS 局域网发现 | ◐ | 本机回环 PASS，但**必须显式绑定接口**（默认多播路由 EHOSTUNREACH）；跨机 advertise 侧已就绪（2026-11-08 本机 WLAN 广播+回环 DISCOVERED ✓），B 侧 browse 待确认 |
+| V3 | mDNS 局域网发现 | ✅ | 本机回环 PASS（**必须显式绑定接口**，默认多播路由 EHOSTUNREACH）；**跨机定论（2026-11-09）**：单播 4/4 到达、组播 0/4 到达 → **AP 过滤 WLAN→以太网跨介质组播**（B 防火墙已排除：node.exe UDP 入站规则本就存在）。设计修订：**adapter-direct 发现以单播直投 announce 为主路径**，mDNS 降为同介质优化 |
 | V4 | journal 对账 | ✅ | 5/5 PASS：四场景裁决正确，原子写经受 SIGKILL |
-| V5 | ZCode/DSH 并挂 hub | ◐ | **2026-11-08：hub/node 最小版实现完成，同机双进程 35/35 PASS**；**跨机实测同日 PASS**——第二台 Win10（pc2）入池，exec（42）/fs 中文写读逐字节一致，RTT 3-8ms；真实 ZCode 桌面端一键步骤见文末 |
+| V5 | ZCode/DSH 并挂 hub | ◐ | **2026-11-08：hub/node 最小版实现完成，同机双进程 35/35 PASS**；**跨机实测同日 PASS**（pc2 入池，exec/fs/中文全通过，RTT 3-8ms）；**§6 断线演练跨机复现 PASS（2026-11-09）**——SIGKILL→unknown（journal 停 started）→同 node_id 重连→恢复；余项：真实 ZCode 桌面端闭环 |
 | V6 | DSH 多 MCP 热插拔 / 会话跨机回放 | ⬜ | 沿用 00 附录 B，P0 后半段 / P5 前 |
 
 ---
@@ -60,7 +60,13 @@
 3. **显式指定接口**（`os.networkInterfaces()` 枚举 + `addMembership(group, ifaceIP)`）→ 多播回环 5/5 收到 ✓
 
 **设计修订**：adapter-direct 的 mDNS **手写 dgram 实现**（bonjour-service 不支持指定接口，弃用）：节点与 hub 必须枚举本机 IPv4 接口逐一绑定/加组，绝不依赖默认多播路由。
-**余项（待用户协助）**：第二台真实设备上的跨机发现——脚本已备：设备 A 跑 `node advertise.mjs`，设备 B 跑 `node browse.mjs`（组播 239.255.77.68:53550，JSON announce，显式绑接口，零依赖）；需确认 Windows 防火墙对 node.exe 的 UDP 入站（5353/53550）放行。
+**跨机定论（2026-11-09，A=WLAN 192.168.1.42 / B=以太网 192.168.1.88）**：
+
+- A `advertise.mjs` 持续广播（自身回环 DISCOVERED ✓）；B `browse.mjs` 两接口入组后 **0 包到达**。
+- 判别实验：A→B:53551 **单播** UDP 探针 **4/4 到达**（payload 原样）——IP 层连通完好。
+- B 防火墙排除：`netsh` 证实 `C:\Program Files\nodejs\node.exe` 的 UDP 入站允许规则本就存在（专用+公用、任意端口、路径精确匹配）。
+- **定论**：AP 在 WLAN→以太网方向过滤组播帧（IGMP Snooping/组播增强类行为）。次要嫌疑 B 的 Hyper-V/WSL 虚拟交换机无法单变量排除，但判别结论不变：**组播发现不可作为跨介质依赖**。
+- **设计修订（adapter-direct 实现说明，不动 P0 代码）**：发现以**单播直投 announce**（hub IP 已知时直发）为主路径；mDNS 仅作同介质优化；手输地址保持兜底。与 01 §5.1"LAN 直连一等公民"不冲突——直达通道与发现机制分离。
 
 ## V4 · journal 对账 ✅
 
@@ -112,3 +118,21 @@
 > 2. 桌面端 ZCode 打开本仓库 → 首次会话信任根 `.mcp.json`（mdp = attach 桥，自动读令牌）→ 直接说"列出池内节点并在 pc-test 上跑 `echo hello`"。工具名 `mcp__mdp__nodes / exec / fs / job_*`。
 
 **真实第二台机器**：与 V3 余项合并——hub 起于主机，子机 `npm run node -- --hub <主机IP>:7900 --name pc2 --ws repo=<路径>`（mDNS 自动发现 hub 为 P1 项，v1 先手输）。
+
+### §6 断线/对账演练（跨机实录，2026-11-09）✅
+
+按 CROSS-MACHINE.md §6 执行，A（hub 侧）与 B（节点侧=本机）两侧记录互证：
+
+| 步骤 | 结果 |
+|---|---|
+| A 提交长任务 `Start-Sleep 300`（timeout 280s） | pc2 开始执行，journal 落 `started`；击杀前另一条探针 exec 正常返回 ok |
+| B 强杀 node 进程 | **两次击杀**：TaskStop 只杀 npm 包装，node 子进程成孤儿（连接仍 ESTABLISHED）→ 补刀 `taskkill /F /PID`（TerminateProcess，SIGKILL 语义）后连接清零 |
+| A 侧终态 | `{status:"unknown", call_id:"c-mw80ltmp-14-h8tdgg", error:{class:"network", retryable:false, message:"节点在调用期间断连：结局不明（journal 对账后可续），禁止盲目重发"}}` —— 与 B 侧 journal 冻结记录（`started`，received→started 无 finished）逐字段互证 |
+| B 重启 | **同 node_id `ffdc6faf1638d552`** 自动重连，hub 欢迎 epoch=1（T29 跨机复现；hub 日志时间线：上线→离线仅一次（补刀瞬间）→同 id 上线） |
+| A 恢复验证 | 干净重跑 exec：`ok exit=0 stdout="42\n"`；跨机中文无损回传（T30） |
+
+**附注**：恢复验证时一条探测曾 `exit=1` 空输出——系 A 侧命令嵌套引号被 PS 包装层吃掉（命令自身报错），信封如实透传退出码，属**行为正确**的证据而非异常。
+
+**流程发现 → P1 待办**：
+1. **"停 npm 包装 ≠ 停 node agent"**：Windows 上杀父进程留下孤儿子进程且 hub 连接保持、`/nodes` 仍显示 online——hub 日志证实 TaskStop 期间零离线事件。**P1 待办**：`mdp node stop` 必须按进程树杀（`taskkill /T`）或 node agent 自持 PID 文件；hub 健康语义维持"socket 存活=在线"（对半死节点是诚实的），辅以心跳超时（已有）。
+2. curl GBK 坑（上文跨机实测段）与 V2 发现同族：**非 ASCII 载荷的 REST 示例统一用 node fetch**，写入 P1 GUI/API 文档规范。
