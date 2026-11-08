@@ -81,6 +81,8 @@ export const announceUnicast = (opts: AnnounceUnicastOpts): Promise<AnnouncePayl
       if (opts.filter && !opts.filter(p)) return;
       finish(p);
     });
+    // 发现语义：任何 socket 级错误（含端口不可达）都归一为"未发现"→ 调用方回退手输地址
+    // （互审 nit ②：如需区分 EADDRINUSE 等本机配置错误，由上层接线时前置探测，不在此分层）
     sock.on('error', () => finish(null));
 
     sock.bind(() => {

@@ -44,7 +44,6 @@ export const buildManifest = async (root: string, opts: { extraIgnore?: string[]
   };
   // 每层目录一个 ignore 匹配器栈（本目录 .gitignore + extraIgnore 只作用于其子树，向下继承）
   const walk = async (dir: string, rel: string, rules: IgnoreRule[]): Promise<void> => {
-    const ignoreFiles: string[] = [];
     const gi = path.join(dir, GITIGNORE);
     const layers = rules;
     let own: IgnoreRule[] = [];
@@ -52,7 +51,6 @@ export const buildManifest = async (root: string, opts: { extraIgnore?: string[]
       const text = await fsp.readFile(gi, 'utf8');
       own = parseIgnoreLines(text);
     } catch { /* 无 .gitignore */ }
-    if (own.length > 0) ignoreFiles.push(gi);
     const local = matcher([...layers, ...own]);
     const relDirBase = rel === '' ? '' : rel + '/';
 
@@ -119,7 +117,6 @@ export const buildManifest = async (root: string, opts: { extraIgnore?: string[]
       }
       // 其他类型（fifo/socket 等）：不进清单，不报错
     }
-    void ignoreFiles;
   };
 
   await walk(rootAbs, '', []);

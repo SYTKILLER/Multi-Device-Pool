@@ -1,28 +1,11 @@
 /**
- * announce 载荷协议（mdp/1）。
- * 注：本 schema 暂居本包——已登记契约变更请求，待 A 机接线 hub/node 时迁入 @mdp/contract（docs/p1-board.md）。
+ * announce 编解码与校验（实现层）。schema 与常量已迁入 @mdp/contract（契约变更 2026-11-09，A 迁入、B 接线）——
+ * 本文件保留 encode/parse 实现并对包内旧导入路径保持再导出兼容。
  */
+import { ANNOUNCE_MAX_BYTES, type AnnouncePayload } from '@mdp/contract';
 
-export type AnnounceKind = 'announce' | 'announce_reply';
-export type AnnounceRole = 'hub' | 'node';
-
-export interface AnnouncePayload {
-  proto: 'mdp/1';
-  kind: AnnounceKind;
-  role: AnnounceRole;
-  /** display_name（节点）或 hub 名 */
-  name: string;
-  /** node_id（公钥哈希）或 hub root 公钥指纹 */
-  id: string;
-  /** 对端 TCP 端点端口（node=agent 端口 / hub=节点协议端口） */
-  tcpPort?: number;
-  /** 仅 hub 携带（01 §8.2 epoch 语义） */
-  epoch?: number;
-  ts: number;
-}
-
-/** 单报文硬上限：UDP 载荷防滥用（红队 P2-10 同族：任何网络输入先限量） */
-export const ANNOUNCE_MAX_BYTES = 1024;
+export type { AnnouncePayload, AnnounceKind, AnnounceRole } from '@mdp/contract';
+export { ANNOUNCE_MAX_BYTES } from '@mdp/contract';
 
 export const encodeAnnounce = (p: AnnouncePayload): Buffer => {
   const buf = Buffer.from(JSON.stringify(p), 'utf8');

@@ -7,10 +7,10 @@
  */
 import dgram from 'node:dgram';
 import { encodeAnnounce, parseAnnounce, type AnnouncePayload } from './protocol.js';
+import { ANNOUNCE_GROUP, ANNOUNCE_PORT } from '@mdp/contract';
 import { listLanIfaces } from './ifaces.js';
 
-export const ANNOUNCE_GROUP = '239.255.77.68';
-export const ANNOUNCE_PORT = 53550;
+export { ANNOUNCE_GROUP, ANNOUNCE_PORT } from '@mdp/contract';
 
 export interface MulticastAnnouncerOpts {
   payload: AnnouncePayload;      // kind 会被强制为 'announce'
@@ -70,6 +70,7 @@ export class MulticastBrowser {
   private sweeper?: NodeJS.Timeout;
   private readonly seen = new Map<string, { payload: AnnouncePayload; lastSeen: number; remote: Remote }>();
   constructor(private readonly opts: MulticastBrowserOpts) {}
+  /** 返回成功加组的接口数；**调用方应检查 joined===0** 的场景（无 LAN 接口/全部失效）并自行降级（互审 nit ①） */
   start(): Promise<number> {
     return new Promise((resolve, reject) => {
       const sock = dgram.createSocket({ type: 'udp4', reuseAddr: true });

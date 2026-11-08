@@ -5,7 +5,7 @@
 
 export const SECRET_PATH_RULES: Array<{ re: RegExp; why: string }> = [
   { re: /(^|\/)\.env(\..+)?$/i, why: '.env 类环境文件' },
-  { re: /\.(pem|key|pfx|p12|crt\.)$/i, why: '证书/密钥文件' },
+  { re: /\.(pem|key|pfx|p12)$/i, why: '证书/密钥文件' },  // .crt 为公钥材料不敏感，不拦（互审 nit ③）
   { re: /(^|\/)id_(rsa|dsa|ecdsa|ed25519)/i, why: 'SSH 私钥' },
   { re: /(^|\/)\.aws(\/|$)/i, why: 'AWS 凭证目录' },
   { re: /(^|\/)credentials($|\.)/i, why: 'credentials 文件' },
@@ -29,19 +29,27 @@ export const secretPathHit = (relPath: string): string | null => {
   return null;
 };
 
-/** 读文件头 scanBytes（默认 8KB）按 latin1 匹配内容启发式；返回原因或 null */
+/** 读文件头 scanBytes（默认 8KB）按 latin1 匹配内容启发式；返回原因或 null。
+ *  用 open+read 定长窗口——绝不整读大文件（互审 nit ①：原实现全量 readFile 后截断，GB 级文件内存尖峰） */
 export const secretContentHit = async (absPath: string, scanBytes = 8192): Promise<string | null> => {
-  const { readFile } = await import('node:fs/promises');
-  let buf: Buffer;
+  const fsp = await import('node:fs/promises');
+  let fh;
   try {
-    const fh = await readFile(absPath);
-    buf = fh.subarray(0, scanBytes);
+    fh = await fsp.open(absPath, 'r');
   } catch {
     return null; // 读不动的不猜：按正常文件进 manifest（后续 hash 阶段自然暴露）
   }
-  const text = buf.toString('latin1');
-  for (const r of SECRET_CONTENT_RULES) {
-    if (r.re.test(text)) return r.why;
+  try {
+    const buf = Buffer.alloc(scanBytes);
+    const { bytesRead } = await fh.read(buf, 0, scanBytes, 0);
+    const text = buf.subarray(0, bytesRead).toString('latin1');
+    for (const r of SECRET_CONTENT_RULES) {
+      if (r.re.test(text)) return r.why;
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    await fh.close().catch(() => {});
   }
-  return null;
 };

@@ -9,6 +9,9 @@
     ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" }
   },
   "files": ["dist"],
+  "dependencies": {
+    "@mdp/contract": "0.2.0"
+  },
   "scripts": {
     "build": "tsc -p .",
     "test": "node --test dist/test/*.test.js"
