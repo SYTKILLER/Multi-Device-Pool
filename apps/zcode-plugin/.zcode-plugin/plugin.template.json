@@ -1,0 +1,16 @@
+{
+  "name": "mdp",
+  "version": "0.1.0",
+  "description": "Multi-Device-Pool：把本机 ZCode 会话接入多设备池——列出节点、跨机 exec/fs、审批与任务（P1-9）。构建脚本以绝对路径渲染 mcpServers（便携打包属 P2 marketplace 流程）。",
+  "author": { "name": "Multi-Device-Pool" },
+  "license": "MIT",
+  "skills": "skills",
+  "mcpServers": {
+    "mdp": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["__MDP_PLUGIN_DIST__/attach-plugin.mjs"],
+      "env": {}
+    }
+  }
+}

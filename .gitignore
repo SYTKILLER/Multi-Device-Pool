@@ -5,3 +5,4 @@ verification/*/node_modules/
 verification/v4-journal/journal-data/
 .vite/
 ws-repo
+.zcode-plugin/plugin.json
