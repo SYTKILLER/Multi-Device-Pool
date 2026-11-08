@@ -7,6 +7,7 @@ import { NodeProtocolServer, type NodeHandle } from './nodeproto.js';
 import { HubJobs, type HubJob } from './jobs.js';
 import { TOOL_DEFS } from './mcp-tools.js';
 import { saveHubDb, type HubDbShape } from './state.js';
+import { featureStatus } from './version.js';
 
 export interface HubOptions {
   home: string;
@@ -133,6 +134,20 @@ export class Hub {
     return { status: 'failed', node_id: '', call_id: callId, ts_hub: Date.now(), error: { class: 'offline', retryable: false, message: msg } };
   }
 
+  /** P1-4 版本协商：能力被禁用 → permission 类拒绝（永不重试）+ 升级提示 */
+  #featureGate(nodeId: string, cap: 'exec' | 'fs'): ResultEnvelope | undefined {
+    const rec = this.opts.db.nodes[nodeId];
+    if (!rec) return undefined;
+    const st = featureStatus(rec.manifest)[cap];
+    if (!st.available) {
+      return {
+        status: 'failed', node_id: nodeId, call_id: '', ts_hub: Date.now(),
+        error: { class: 'permission', retryable: false, message: `[版本协商] ${st.hint}` },
+      };
+    }
+    return undefined;
+  }
+
   /** nodes()：节点/工作区/健康/权限摘要 + 未消费 job 计数（01 §4.1） */
   nodesSnapshot(): Record<string, unknown> {
     const online = this.nodeServer.listHandles().map((h) => ({
@@ -148,6 +163,8 @@ export class Hub {
       workspaces: h.manifest.workspaces,
       native_enforcement: h.manifest.native_enforcement,
       self_description: h.manifest.self_description,
+      // P1-4 版本协商状态（GUI 提示与 LLM 决策依据）；agent_version 已在上方基础字段
+      features: featureStatus(h.manifest),
       // overlay 摘要（01 §3.3 注入大脑：节点侧闸门当前状态，hub 为事实源）
       overlay: (() => {
         const o = this.getOverlay(h.node_id);
@@ -180,6 +197,9 @@ export class Hub {
         const nodeName = String(args['node'] ?? '');
         const found = this.#findNode(nodeName);
         if ('offlineMsg' in found) return this.#offlineEnvelope(found.offlineMsg, '');
+        const cap = name === 'fs' ? 'fs' : 'exec';
+        const blocked = this.#featureGate(found.handle.node_id, cap);
+        if (blocked) return blocked;
         const params = { ...args } as Record<string, unknown>;
         delete params['node'];
         const timeoutMs = Math.min(Number(args['timeout_ms'] ?? DEFAULT_EXEC_TIMEOUT_MS), MAX_EXEC_TIMEOUT_MS);

@@ -75,7 +75,8 @@ export class NodeAgent {
       os: `${os.type().toLowerCase()}${process.platform === 'win32' ? '-win' + os.release().split('.')[0] : ''}`,
       arch: os.arch(),
       shell: defaultShell(),
-      agent_version: '0.1.0',
+      // P1-4 测试钩子：MDP_AGENT_VERSION 模拟旧版本节点（版本协商验收）
+      agent_version: process.env['MDP_AGENT_VERSION'] ?? '0.1.0',
       capabilities: ['exec', 'fs'],
       workspaces: wsEntries,
       available: 'session',

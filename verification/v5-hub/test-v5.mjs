@@ -357,6 +357,36 @@ ok('T42 模式表每节点可编辑（自定义表整体覆盖内建）',
   cg1.status === 'needs_approval' && cg2.status === 'ok' && cg3.status === 'needs_approval' && cg3d.status === 200,
   JSON.stringify({ cg1: cg1.status, cg2: cg2.status, cg3: cg3.status }));
 
+// ---------- P1-4 版本协商 ----------
+const ws2 = path.join(work, 'repo2');
+fs.mkdirSync(ws2, { recursive: true });
+fs.writeFileSync(path.join(ws2, 'old.txt'), 'old-node-content');
+const nodeHome2 = path.join(work, 'node-old');
+fs.mkdirSync(nodeHome2, { recursive: true });
+fs.writeFileSync(path.join(nodeHome2, 'config.json'), JSON.stringify({ display_name: 'pc-old', hub: `127.0.0.1:${info.node_port}`, workspaces: [{ name: 'repo', path: ws2 }] }));
+const nodeProc2 = spawn(process.execPath, [nodeBin, '--home', nodeHome2, '--config', path.join(nodeHome2, 'config.json')], {
+  env: { ...process.env, MDP_AGENT_VERSION: '0.0.9' },
+  stdio: ['ignore', 'pipe', 'pipe'],
+});
+nodeProc2.stdout.on('data', onLineNode2);
+const nodeLog2 = [];
+function onLineNode2(c) { for (const l of c.toString().split('\n')) if (l.trim()) nodeLog2.push(`${ts()} ${l.trim()}`); }
+let oldOnline = false;
+for (let i = 0; i < 60; i++) {
+  await sleep(100);
+  const { body } = await rest('/nodes', 'GET');
+  if (body.nodes?.some((n) => n.display_name === 'pc-old' && n.online)) { oldOnline = true; break; }
+}
+const v1 = await callTool('exec', { node: 'pc-old', cmd: `echo hi`, cwd: 'workspace:repo' });
+const v2 = await callTool('fs', { node: 'pc-old', op: 'read', path: 'workspace:repo/old.txt' });
+const v3 = JSON.parse((await callTool('nodes', {})).result.stdout).nodes.find((n) => n.display_name === 'pc-old');
+ok('T43 版本协商：0.0.9 旧节点 exec 禁用（升级提示）、fs 仍可用、nodes() 带特性状态',
+  oldOnline && v1.status === 'failed' && v1.error?.class === 'permission' && /低于 exec 最低/.test(v1.error?.message ?? '')
+  && v2.status === 'ok' && v2.result.stdout.includes('old-node-content')
+  && v3.features?.exec?.available === false && v3.features?.fs?.available === true && !!v3.features?.exec?.hint,
+  JSON.stringify({ oldOnline, v1: v1.error?.message, v2: v2.status, exec: v3.features?.exec }));
+nodeProc2.kill('SIGKILL');
+
 // ---------- 收尾 ----------
 hubProc.kill();
 nodeProc.kill('SIGKILL');
