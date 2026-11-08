@@ -387,6 +387,37 @@ ok('T43 版本协商：0.0.9 旧节点 exec 禁用（升级提示）、fs 仍可
   JSON.stringify({ oldOnline, v1: v1.error?.message, v2: v2.status, exec: v3.features?.exec }));
 nodeProc2.kill('SIGKILL');
 
+// ---------- P1-6 mdp node stop 进程树管理 ----------
+const ws3 = path.join(work, 'repo3');
+fs.mkdirSync(ws3, { recursive: true });
+const nodeHome3 = path.join(work, 'node-stop');
+fs.mkdirSync(nodeHome3, { recursive: true });
+fs.writeFileSync(path.join(nodeHome3, 'config.json'), JSON.stringify({ display_name: 'pc-stop', hub: `127.0.0.1:${info.node_port}`, workspaces: [{ name: 'repo', path: ws3 }] }));
+// 用 npm 包装链启动（§6 孤儿场景的形状：cmd → npm → node agent）
+const stopProc = spawn('cmd', ['/c', 'npm', 'run', 'node', '--', '--home', nodeHome3, '--config', path.join(nodeHome3, 'config.json')], { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
+stopProc.stdout.on('data', onLineNode3);
+stopProc.stderr.on('data', onLineNode3);
+const nodeLog3 = [];
+function onLineNode3(c) { for (const l of c.toString().split('\n')) if (l.trim()) nodeLog3.push(`${ts()} ${l.trim()}`); }
+let stopOnline = false;
+for (let i = 0; i < 100; i++) {
+  await sleep(100);
+  try { const { body } = await rest('/nodes', 'GET'); if (body.nodes?.some((n) => n.display_name === 'pc-stop' && n.online)) { stopOnline = true; break; } } catch { /* 重试 */ }
+}
+const stopPid = Number(fs.readFileSync(path.join(nodeHome3, 'node.pid'), 'utf8').trim());
+const cliOut = execFileSync(process.execPath, [path.join(ROOT, 'apps', 'cli', 'dist', 'index.js'), 'node', 'stop', '--home', nodeHome3], { encoding: 'utf8', timeout: 30000 });
+await sleep(2000); // 让 npm/cmd 包装链自然退出
+const { body: p6nodes } = await rest('/nodes', 'GET');
+const stopState = p6nodes.nodes?.find((n) => n.display_name === 'pc-stop')?.online;
+let orphans = -1;
+try {
+  const ps = execFileSync('powershell', ['-NoProfile', '-Command', `(Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*${nodeHome3}*' } | Measure-Object).Count`], { encoding: 'utf8', timeout: 30000, windowsHide: true });
+  orphans = Number(ps.trim());
+} catch { /* PS 不可用则跳过孤儿计数 */ }
+ok('T44 mdp node stop：PID 文件定位 + 按树杀 + hub 显示离线 + 无孤儿进程',
+  stopOnline && stopPid > 0 && /进程树已终止/.test(cliOut) && stopState === false && !fs.existsSync(path.join(nodeHome3, 'node.pid')) && orphans === 0,
+  JSON.stringify({ stopOnline, stopPid, cliOut: cliOut.trim().slice(0, 80), stopState, pidFileGone: !fs.existsSync(path.join(nodeHome3, 'node.pid')), orphans, log3: nodeLog3.slice(-2) }));
+
 // ---------- 收尾 ----------
 hubProc.kill();
 nodeProc.kill('SIGKILL');

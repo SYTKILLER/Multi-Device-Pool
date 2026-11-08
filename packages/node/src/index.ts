@@ -6,6 +6,8 @@ import { resolveArgs } from './cli.js';
 import { loadConfig } from './config.js';
 import { loadOrCreateIdentity, defaultHome } from './identity.js';
 import { NodeAgent } from './agent.js';
+import fs from 'node:fs';
+import path from 'node:path';
 
 const args = resolveArgs(process.argv.slice(2));
 const home = args.home ?? defaultHome();
@@ -23,8 +25,14 @@ const agent = new NodeAgent({
 });
 agent.start();
 
+// P1-6：自持 PID 文件——`mdp node stop` 按此定位进程树（verification-p0 §6：npm 包装链有孤儿，
+// 必须按树杀；本文件是"谁是节点进程"的权威答案）
+const pidFile = path.join(home, 'node.pid');
+fs.writeFileSync(pidFile, String(process.pid));
+
 const shutdown = (): void => {
   agent.stop();
+  try { fs.rmSync(pidFile, { force: true }); } catch { /* 已删 */ }
   process.exit(0);
 };
 process.on('SIGINT', shutdown);

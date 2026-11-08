@@ -1,0 +1,16 @@
+{
+  "name": "@mdp/cli",
+  "version": "0.1.0",
+  "description": "mdp CLI：node/hub 生命周期（stop 进程树管理等），bin 名 mdp（01 §1.2）",
+  "type": "module",
+  "bin": {
+    "mdp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p ."
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^5.6.0"
+  }
+}
