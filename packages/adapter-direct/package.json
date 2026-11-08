@@ -1,0 +1,20 @@
+{
+  "name": "@mdp/adapter-direct",
+  "version": "0.1.0",
+  "description": "adapter-direct 发现层（P1-7）：单播直投 announce（主路径，V3 定论）+ 同介质组播 announce（显式绑接口）。transport 本体（TCP 帧）由 nodeproto 承担，本包只管'找到对方并确认身份'。",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p .",
+    "test": "node --test dist/test/*.test.js"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "@types/node": "^22.0.0"
+  }
+}

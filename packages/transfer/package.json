@@ -1,0 +1,20 @@
+{
+  "name": "@mdp/transfer",
+  "version": "0.1.0",
+  "description": "pool-transfer（P1-10 起步）：manifest walk 双层过滤——gitignore-lite 只管体积项；秘密层（路径+内容启发）硬排除并列出；symlink 永不跟随。分块/续传/原子落地属 P2。",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p .",
+    "test": "node --test dist/test/*.test.js"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "@types/node": "^22.0.0"
+  }
+}

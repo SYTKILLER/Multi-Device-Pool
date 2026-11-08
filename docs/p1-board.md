@@ -22,10 +22,10 @@
 | P1-4 | 版本协商握手（hello 带 version+capability flags；低于最低版禁用相关工具并 GUI 提示） | packages/hub + node | **A** | 待认领 | 降级模拟旧 node 入池 → exec 禁用、fs 仍可用、提示文案出现 |
 | P1-5 | 审计哈希链：node JSONL 链式哈希 + hub 定期拉取锚定；result hash = sha256(stdout+stderr+exit) | packages/node + hub | **A** | 待认领 | 篡改任一条历史日志 → 链校验失败可检出 |
 | P1-6 | `mdp node stop` 进程树管理：PID 文件 + `taskkill /T`；`mdp hub stop` 同构 | apps/cli + packages/node | **A** | 待认领 | stop 后无孤儿（netstat 验证）、hub 显示离线；**直接 node 调用无孤儿、npm 包装链有孤儿**——实现注释引用 verification-p0.md §6 |
-| P1-7 | adapter-direct：**单播直投发现**（主路径，V3 定论）+ 手写 dgram mDNS（同介质优化，显式绑接口） | packages/adapter-direct（新建） | **B** | **WIP（B 机 2026-11-09）** | 组播被禁场景（复用 V3 判别环境）下仅靠单播完成发现；mDNS 同介质可用 |
+| P1-7 | adapter-direct：**单播直投发现**（主路径，V3 定论）+ 手写 dgram mDNS（同介质优化，显式绑接口） | packages/adapter-direct（新建） | **B** | ✅ **完成（B 机 2026-11-09，待 A 互审）** | 测试 6/6 ×3 稳定（unicast 往返/重试/耗尽回退 + 组播发现/dedup/TTL 下线）。实现要点：sweeper 间隔自适应 TTL/2；多播逐接口 setMulticastInterface+loopback；载荷 1KB 硬上限+严格 parse。**实现说明：同介质路径为自定义 announce 协议而非 DNS-SD（见决策请求 #1）** |
 | P1-8 | GUI 骨架：节点/健康/审批卡（倒计时）/overlay 设置；Vite+React+TS，token 认证（红队 P0-3） | apps/gui（新建） | **B** | 待认领 | 浏览器内完成一次完整审批流程（TTL 倒计时可见） |
 | P1-9 | ZCode 插件化：plugin.json（mcpServers + skill + ui 面板）+ 打包脚本 | apps/zcode-plugin（新建） | **B** | 待认领 | 桌面端安装 → 信任 → 会话内调 pc2 exec 成功（**顺路补 P0 末项验收**） |
-| P1-10 | transfer 包起步：manifest walk 双层过滤（gitignore 管体积 / 秘密扫描硬排除）+ symlink 不跟随 | packages/transfer（新建） | **B** | **WIP（B 机 2026-11-09）** | 单测：.env/私钥被硬排除并列出、symlink 记为引用不跟随、活锁文件剔除 |
+| P1-10 | transfer 包起步：manifest walk 双层过滤（gitignore 管体积 / 秘密扫描硬排除）+ symlink 不跟随 | packages/transfer（新建） | **B** | ✅ **完成（B 机 2026-11-09，待 A 互审）** | 测试 4/4 ×3 稳定（分桶端到端 + sha256 抽验 + gitignore-lite 语义 + 容错）。两处规格符合性修正：`*.lock` 不入默认体积层（Cargo.lock 是合法文件，01 §5.2 活锁清单仅 `.git/*.lock`+swap）；lockfile 判定先于体积层，独立成桶。symlink：内链→refs 不跟随，外链→refs+excluded(symlink-out) |
 
 > 平衡说明：A 机 6 项集中在既有 hub/node 包（P0 上下文在手）；B 机 4 项全是新包（adapter/GUI/插件/transfer）。认领有异议直接改表推送——看板即事实。
 
@@ -33,10 +33,10 @@
 
 | 日期 | 请求方 | 内容 | 状态 |
 |---|---|---|---|
-| — | — | — | — |
+| 2026-11-09 | B | `AnnouncePayload` schema + 发现端口常量（单播 UDP 7900 与 TCP 同号、组播 239.255.77.68:53550）迁入 `@mdp/contract`（现暂居 packages/adapter-direct/src/protocol.ts）——A 接线 hub/node（P1-3/P1-4）时需要 | 待处理 |
 
 ## 决策请求（等用户拍板，拍板后移入 01 文档修订并删行）
 
 | 日期 | 提出方 | 议题 | 状态 |
 |---|---|---|---|
-| — | — | — | — |
+| 2026-11-09 | B | 01 §5.1 的"mDNS（_mdp._tcp）"修订为"**自定义组播 announce 协议**（JSON over UDP 239.255.77.68:53550）"：两端皆为池软件、无需 OS 级互操作；显式绑接口是 V3 强制约束（自定义协议下实现最直接）；DNS-SD 线格式编码是纯开销。代码已按自定义协议交付，如否决再补 DNS-SD | 待拍板 |
