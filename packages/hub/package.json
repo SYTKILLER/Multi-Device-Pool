@@ -1,0 +1,24 @@
+{
+  "name": "@mdp/hub",
+  "version": "0.1.0",
+  "description": "mdp hub daemon：节点注册表、审批 job、MCP server（/mcp）、节点协议端点、信封裁决（01 技术方案 §1.2/§4）",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p ."
+  },
+  "dependencies": {
+    "@mdp/contract": "0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^5.6.0"
+  }
+}
