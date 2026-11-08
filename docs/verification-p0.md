@@ -101,6 +101,20 @@
 - **V5 新增 T40–T42**：remember→免批全链 / 不同前缀仍拦可 deny / 自定义表覆盖后内建 `dd` 不再拦截、自定义 MARKER 命中转审批。
 - 审计挂钩：`job.remembered_prefix` 随审批记录留存（approver + prefix），供 P1-5 审计链与 P1-3 对账使用。
 
+### P1-4 版本协商握手 ✅（2026-11-09，A 机，V5 44/44）
+
+- hello 本就携带 `manifest.agent_version` + `capabilities`（P0 结构已备）；本任务补 **hub 侧最低版本表强制**（`FEATURE_MIN`：exec≥0.1.0、fs≥0.0.1、transfer=P2 前恒不可用；`compareVersions` 数值逐段比较）。
+- 低于最低版：该能力调用在 **hub 侧预检拒绝**（不发往节点）→ `failed + permission（永不重试）` + 升级提示；`nodes()` 每节点返回 `features{exec,fs,transfer}`（available/min/agent/hint）——GUI 提示与 LLM 决策共用同一事实源。
+- 模拟钩子：node 侧 `MDP_AGENT_VERSION` 环境变量伪造旧版本（仅验收用）。
+- **V5 T43**：0.0.9 旧节点入池 → exec 拒（提示含"低于 exec 最低"）、fs read 照常、nodes() 特性状态正确。
+- 插曲（记录在案）：快照重复字段被 tsc 抓出，但 `noEmitOnError` 未开导致 JS 照常产出、测试先绿——**教训：构建错误必须零容忍，verify 链前置干净构建检查**（已在本轮 verify 口径执行）。
+
+### P1-7 / P1-10 互审 ✅（2026-11-09，A 机审 B 机交付）
+
+- **adapter-direct（P1-7）**：A 机 build + test 6/6 全绿；走查通过——`protocol.ts` 1KB 双向硬上限 + 严格 parse（proto/kind/role/name/id/ts 校验，红队输入限制）；`unicast.ts` reply 源地址校验（只信目标主机）+ 重试/超时/pending 守卫；`multicast.ts` 逐接口 `setMulticastInterface`+loopback、全接口加组（V3 强制约束）、TTL 自适应 sweeper + dedup。非阻塞 nit 已回写看板供 B 参考。
+- **transfer（P1-10）**：A 机 build + test 4/4 全绿；走查通过——双层过滤（体积/秘密硬排除）语义正确、`*.lock` 规格修正成立（01 §5.2 活锁清单确为 `.git/*.lock`+swap，Cargo.lock 属合法文件）、symlink 内链 refs/外链 refs+excluded 分桶、决定性排序 + 流式 sha256。非阻塞 nit：`secretContentHit` 全量读文件后截 8KB（大文件内存尖峰，建议 P2 流式窗口）、`void ignoreFiles` 死代码、`crt\.$` 正则形态存疑（.crt 公钥本不敏感，影响极小）。
+- **契约变更请求已处理**：`AnnouncePayload` schema + 发现端口常量迁入 `@mdp/contract@0.2.0`（`src/discovery.ts`，纯类型常量零逻辑）；adapter-direct 接线由 B 自行完成。
+
 ## V5 / V6
 
 ### V5 · hub/node 最小实现与集成验收 ◐（2026-11-08）

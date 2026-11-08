@@ -1,6 +1,6 @@
 {
   "name": "@mdp/contract",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Multi-Device-Pool 池协议 schema：结果信封、节点 manifest、overlay、journal（01 技术方案 §3–§4 的类型化）",
   "type": "module",
   "main": "dist/index.js",
