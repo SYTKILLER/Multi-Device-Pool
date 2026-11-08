@@ -332,6 +332,31 @@ ok('T38 overlay REST 编辑 + 即时推送全链', g1.status === 'ok' && g2.stat
 const ovGet = await (await fetch(`${MCP}/nodes/${NODE_ID}/overlay`, { headers: { Authorization: `Bearer ${TOKEN}` } })).json();
 ok('T39 overlay GET 回读（hub 为事实源）', ovGet.overlay?.levels?.fs === 'workspaces' && Array.isArray(ovGet.overlay?.path_domains), JSON.stringify(ovGet.overlay?.levels));
 
+// ---------- P1-2 内容闸模式表 + 学习式白名单 ----------
+fs.mkdirSync(path.join(work, 'learn-a'), { recursive: true });
+fs.mkdirSync(path.join(work, 'learn-b'), { recursive: true });
+const l1 = await callTool('exec', { node: 'pc-test', cmd: `Remove-Item -Recurse -Force ${path.join(work, 'learn-a')}`, cwd: 'workspace:repo' });
+const LJ1 = l1.job?.job_id;
+await fetch(`${MCP}/jobs/${LJ1}/approve`, { method: 'POST', headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ remember: true }) });
+const l1r = await waitForJob(LJ1);
+const l2 = await callTool('exec', { node: 'pc-test', cmd: `Remove-Item -Recurse -Force ${path.join(work, 'learn-b')}`, cwd: 'workspace:repo' });
+ok('T40 学习式白名单：首批 remember 后同前缀免批', l1.status === 'needs_approval' && l1r.state === 'finished' && l2.status === 'ok',
+  JSON.stringify({ l1: l1.status, l1r: l1r.state, l2: l2.status }));
+const l3 = await callTool('exec', { node: 'pc-test', cmd: `rm -rf ${path.join(work, 'unlearned')}`, cwd: 'workspace:repo' });
+const l3d = await fetch(`${MCP}/jobs/${l3.job?.job_id}/deny`, { method: 'POST', headers: { Authorization: `Bearer ${TOKEN}` } });
+ok('T41 不同前缀危险命令仍需审批（可 deny）', l3.status === 'needs_approval' && l3d.status === 200, JSON.stringify({ l3: l3.status, deny: l3d.status }));
+await patchOverlay({ command_patterns_allow: [] });
+
+const cg1 = await callTool('exec', { node: 'pc-test', cmd: `dd if=nul of=NUL`, cwd: 'workspace:repo' }); // 内建表命中 dd
+await patchOverlay({ content_gate_patterns: ['MDP-FAKE-MARKER'] });
+const cg2 = await callTool('exec', { node: 'pc-test', cmd: `dd if=nul of=NUL`, cwd: 'workspace:repo' }); // 自定义表覆盖内建 → 不再拦截
+const cg3 = await callTool('exec', { node: 'pc-test', cmd: `echo MDP-FAKE-MARKER hit`, cwd: 'workspace:repo' }); // 自定义模式命中
+const cg3d = await fetch(`${MCP}/jobs/${cg3.job?.job_id}/deny`, { method: 'POST', headers: { Authorization: `Bearer ${TOKEN}` } });
+await patchOverlay({ content_gate_patterns: [] });
+ok('T42 模式表每节点可编辑（自定义表整体覆盖内建）',
+  cg1.status === 'needs_approval' && cg2.status === 'ok' && cg3.status === 'needs_approval' && cg3d.status === 200,
+  JSON.stringify({ cg1: cg1.status, cg2: cg2.status, cg3: cg3.status }));
+
 // ---------- 收尾 ----------
 hubProc.kill();
 nodeProc.kill('SIGKILL');

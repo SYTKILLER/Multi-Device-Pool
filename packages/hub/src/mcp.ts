@@ -7,6 +7,7 @@
 import http from 'node:http';
 import type { ResultEnvelope } from '@mdp/contract';
 import { TOOL_DEFS } from './mcp-tools.js';
+import { extractCmdPrefix } from './hub.js';
 import type { Hub } from './hub.js';
 
 export interface McpHttpOptions {
@@ -47,11 +48,22 @@ export const startMcpHttp = (hub: Hub, opts: McpHttpOptions): http.Server => {
       return json(res, 200, reply);
     }
 
-    // 审批 REST（GUI 代理；审批人=持令牌者，01 §6）
+    // 审批 REST（GUI 代理；审批人=持令牌者，01 §6）。body {remember?:boolean, prefix?:string} → P1-2 学习式白名单
     const m = /^\/jobs\/([\w-]+)\/(approve|deny)$/.exec(req.url ?? '');
     if (m && req.method === 'POST') {
       const [, jobId, action] = m;
-      const ok = action === 'approve' ? hub.jobs.approve(jobId!, opts.token) : hub.jobs.deny(jobId!, opts.token);
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      let body: { remember?: boolean; prefix?: string } = {};
+      try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') as typeof body; } catch { /* 空/坏 body 视作不带参数 */ }
+      let ok: boolean;
+      if (action === 'approve') {
+        const cmd = hub.jobs.jobs.get(jobId!)?.cmd ?? '';
+        const prefix = body.remember ? (body.prefix ?? extractCmdPrefix(cmd)) : undefined;
+        ok = hub.approveJob(jobId!, opts.token, prefix ? { prefix } : undefined);
+      } else {
+        ok = hub.jobs.deny(jobId!, opts.token);
+      }
       return json(res, ok ? 200 : 409, { ok, job_id: jobId, state: hub.jobs.jobs.get(jobId!)?.state });
     }
 

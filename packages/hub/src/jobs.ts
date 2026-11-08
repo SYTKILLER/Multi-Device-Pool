@@ -19,6 +19,8 @@ export interface HubJob {
   ttl_ms: number;
   /** 审批人令牌 ID（审计，01 §6） */
   approved_by?: string;
+  /** P1-2 学习式白名单：批准时勾选"记住此前缀"（写审计 + 累积进 overlay） */
+  remembered_prefix?: string;
   envelope?: ResultEnvelope;
   /** 审批合并：多个观察者等待同一 job 的终态（V5 审批合并的池层形态） */
   waiters: Array<(env: ResultEnvelope) => void>;
@@ -66,11 +68,12 @@ export class HubJobs {
   }
 
   /** 审批落卡（节点名 + 命令全文 + 倒计时，01 §6）；返回 false = 已终态/不存在 */
-  approve(jobId: string, approverTokenId: string): boolean {
+  approve(jobId: string, approverTokenId: string, remember?: { prefix: string }): boolean {
     const job = this.jobs.get(jobId);
     if (!job || job.state !== 'needs_approval') return false;
     job.state = 'running';
     job.approved_by = approverTokenId.slice(0, 8);
+    if (remember) job.remembered_prefix = remember.prefix;
     this.onContinue(job);
     return true;
   }

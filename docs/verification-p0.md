@@ -94,6 +94,13 @@
 - **V5 新增 T35–T39**：symlink 逃逸 / `..` 穿越 / 全大写形态路径写放行（折叠）/ overlay REST 编辑→exec=deny 即时拒→allowlist 白名单命中放行未命中拒→fs=read-only 写拒读放行→还原 workspaces / GET 回读。
 - 过程回归修复：重构初版把 busy 折进 deny——已恢复 01 §4.3 独立 `busy` 分类（`failed + class:busy`），T11 守住。
 
+### P1-2 内容闸模式表 + 学习式白名单 ✅（2026-11-09，A 机，V5 43/43）
+
+- **学习式白名单闭环**（01 §3.2）：审批 REST 带 `{remember:true}` → hub 提取命令前缀（前两个空白 token，`extractCmdPrefix`；可显式传 `prefix` 覆盖）→ 去重累积进该节点 `overlay.command_patterns_allow` → 即时推送 → 同前缀命令免批；不同前缀危险命令仍转审批、可 deny。
+- **模式表每节点可编辑**：`PATCH /nodes/:id/overlay` 传 `content_gate_patterns`（正则源数组）**整体覆盖**内建初版集；置空还原内建。
+- **V5 新增 T40–T42**：remember→免批全链 / 不同前缀仍拦可 deny / 自定义表覆盖后内建 `dd` 不再拦截、自定义 MARKER 命中转审批。
+- 审计挂钩：`job.remembered_prefix` 随审批记录留存（approver + prefix），供 P1-5 审计链与 P1-3 对账使用。
+
 ## V5 / V6
 
 ### V5 · hub/node 最小实现与集成验收 ◐（2026-11-08）

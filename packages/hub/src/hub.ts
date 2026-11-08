@@ -78,6 +78,22 @@ export class Hub {
     return next;
   }
 
+  /** 审批 + 学习式白名单累积（P1-2，01 §3.2：首次前缀审批 → command_patterns_allow） */
+  approveJob(jobId: string, approverTokenId: string, remember?: { prefix: string }): boolean {
+    const job = this.jobs.jobs.get(jobId);
+    if (!job) return false;
+    const ok = this.jobs.approve(jobId, approverTokenId, remember);
+    if (ok && remember && remember.prefix) {
+      const cur = this.getOverlay(job.node_id);
+      if (cur && !cur.command_patterns_allow.includes(remember.prefix)) {
+        this.updateOverlay(job.node_id, { command_patterns_allow: [...cur.command_patterns_allow, remember.prefix] });
+        const name = this.opts.db.nodes[job.node_id]?.manifest.display_name ?? job.node_id;
+        this.log(`学习式白名单累积：${name} += "${remember.prefix}"`);
+      }
+    }
+    return ok;
+  }
+
   get nodePort(): number {
     return this.nodeServer.port;
   }
@@ -304,3 +320,9 @@ export class Hub {
 }
 
 const envelopeTextSafe = (env: ResultEnvelope): string => JSON.stringify(env, null, 2);
+
+/** 学习式白名单前缀提取（P1-2）：前两个空白分隔 token（如 "git push"、"Remove-Item -Recurse"）；单 token 取整条 */
+export const extractCmdPrefix = (cmd: string): string => {
+  const tokens = cmd.trim().split(/\s+/).filter(Boolean);
+  return tokens.slice(0, Math.min(2, tokens.length)).join(' ');
+};
