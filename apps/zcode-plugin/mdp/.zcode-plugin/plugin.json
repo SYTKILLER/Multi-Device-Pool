@@ -12,7 +12,7 @@
       "type": "stdio",
       "command": "node",
       "args": [
-        "D:/Projects/Multi-Device-Pool/apps/zcode-plugin/dist/attach-plugin.mjs"
+        "D:/Projects/Multi-Device-Pool/apps/zcode-plugin/mdp/dist/attach-plugin.mjs"
       ],
       "env": {}
     }

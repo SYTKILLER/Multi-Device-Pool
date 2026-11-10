@@ -1,0 +1,12 @@
+{
+  "name": "mdp-local",
+  "description": "Multi-Device-Pool 本地插件市场：mdp 设备池插件（含 attach 桥与使用 skill）。约定：<市场目录>/<插件名>/ 即插件本体（本地源免 URL/zip）。",
+  "plugins": [
+    {
+      "name": "mdp",
+      "version": "0.1.0",
+      "description": "Multi-Device-Pool：把 ZCode 会话接入多设备池——列出节点、跨机 exec/fs、审批与任务。",
+      "author": { "name": "Multi-Device-Pool" }
+    }
+  ]
+}

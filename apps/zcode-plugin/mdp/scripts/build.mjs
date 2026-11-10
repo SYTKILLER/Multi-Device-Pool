@@ -4,8 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const pluginDir = path.dirname(path.dirname(fileURLToPath(import.meta.url))); // apps/zcode-plugin
-const repoRoot = path.resolve(pluginDir, '..', '..');
+const pluginDir = path.dirname(path.dirname(fileURLToPath(import.meta.url))); // apps/zcode-plugin/mdp（插件本体根）
+const repoRoot = path.resolve(pluginDir, '..', '..', '..');
 const src = path.join(repoRoot, 'packages', 'hub', 'dist', 'attach.js');
 const dist = path.join(pluginDir, 'dist');
 
