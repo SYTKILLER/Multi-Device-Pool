@@ -4,6 +4,7 @@
   "plugins": [
     {
       "name": "mdp",
+      "source": "./mdp",
       "version": "0.1.0",
       "description": "Multi-Device-Pool：把 ZCode 会话接入多设备池——列出节点、跨机 exec/fs、审批与任务。",
       "author": { "name": "Multi-Device-Pool" }

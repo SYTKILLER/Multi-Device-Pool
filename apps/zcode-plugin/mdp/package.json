@@ -2,7 +2,7 @@
   "name": "@mdp/zcode-plugin",
   "private": true,
   "version": "0.1.0",
-  "description": "mdp 的 ZCode 插件打包（P1-9）：attach 桥 + 使用 skill。build 以绝对路径渲染 plugin.json 并复制 attach 产物（attach.js 零依赖，仅 node:readline）。",
+  "description": "mdp 的 ZCode 插件打包（P1-9）：attach 桥 + 使用 skill。build 复制 hub dist（MCP 入口 `index.js attach`，零依赖）并以绝对路径渲染 plugin.json。",
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs"

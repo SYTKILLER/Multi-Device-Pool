@@ -9,7 +9,7 @@
     "mdp": {
       "type": "stdio",
       "command": "node",
-      "args": ["__MDP_PLUGIN_DIST__/attach-plugin.mjs"],
+      "args": ["__MDP_PLUGIN_DIST__/index.js", "attach"],
       "env": {}
     }
   }
