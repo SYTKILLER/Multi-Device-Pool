@@ -111,3 +111,12 @@ const call=(name,args)=>fetch('http://127.0.0.1:7800/mcp',{method:'POST',headers
 | B 已连接但 A 看不到节点 | 两边系统时间偏差过大（>分钟级）不影响；查 B 的 `--hub` 地址/端口 |
 | mDNS browse 无输出 | UDP 53550 未放行；或设备在不同网段/AP 隔离 → 换手机热点或直连网线再试 |
 | exec 返回 GBK 乱码 | 机器 B 是 Windows：节点已按 V2 包装 PowerShell；若 `--shell cmd` 则按设计走 GBK 解码兜底 |
+
+## 7. P1-9 插件面跨机验收（2026-11-14 新增，A 机已验证安装/信任/nodes 段）
+
+> 前置：A 机 hub 运行中；mdp 插件已在 ZCode 桌面端安装启用（官方 UI 路径：插件市场→添加→粘贴仓库 `apps/zcode-plugin` 目录→个人→安装；**注册表直写无效，必须走 UI**）。新会话中工具前缀为 `mcp__plugin_mdp_mdp__*`（nodes/exec/fs/job_* 共 7 个）。
+
+1. pc2 入池（§3 命令）→ 新 ZCode 会话里 `nodes` 应显示 pc2 online=true。
+2. 会话内说「用 mdp 在 pc2 上执行 `Write-Output "中文回显验证"`」→ 预期 stdout 中文逐字节一致；若弹审批卡（内容闸），批准时可勾"记住前缀"（P1-2 学习式白名单生效后同类免批）。
+3. 三节点演练（§5）：A 机另开终端 `npm run node -- --hub 127.0.0.1:7900 --name a-local --ws repo=C:\Data\Multi-Device-Tool\ws-repo`（ws-repo 已建，gitignored），池内应有 pc2 + a-local 双真节点，各做一次 exec/fs。
+4. 双机各自 `npm run verify` 全绿 → P1 集成验收达成，回填 docs/verification-p0.md 并在看板置✅。
