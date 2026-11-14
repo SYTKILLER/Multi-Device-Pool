@@ -59,9 +59,13 @@ function ApprovalCard({ job, api, onChanged }: { job: HubJob; api: MdpApi; onCha
 }
 
 function OverlayPanel({ api, nodes }: { api: MdpApi; nodes: NodeSnapshot[] }) {
-  const [nodeId, setNodeId] = useState(nodes[0]?.node_id ?? '');
+  const [nodeId, setNodeId] = useState('');
   const [ov, setOv] = useState<OverlayConfig | null>(null);
   const [msg, setMsg] = useState('');
+  // 互审 nit（A 机 2026-11-14）：节点列表晚到时自动选中首个，避免需手动选
+  useEffect(() => {
+    if (!nodeId && nodes.length > 0) setNodeId(nodes[0]!.node_id);
+  }, [nodes, nodeId]);
   const reload = useCallback(() => {
     if (!nodeId) return;
     api.overlay(nodeId).then((r) => setOv(r.overlay)).catch((e) => setMsg(String(e.message)));
