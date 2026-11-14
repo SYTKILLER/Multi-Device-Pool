@@ -31,7 +31,8 @@ export interface ExecOutcome {
 const INLINE_CAP = 64 * 1024;
 const HALF = INLINE_CAP / 2;
 
-const truncate = (s: string): { text: string; cut: boolean } => {
+/** inline 上限截断（头+尾保留，全量落节点 job 目录）；job 终态信封摘要复用 */
+export const truncate = (s: string): { text: string; cut: boolean } => {
   if (Buffer.byteLength(s, 'utf8') <= INLINE_CAP) return { text: s, cut: false };
   return { text: s.slice(0, HALF) + `\n…[截断：全量见 output_ref]…\n` + s.slice(-HALF), cut: true };
 };

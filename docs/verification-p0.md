@@ -213,6 +213,6 @@
 
 **③ 真机新发现（P1-9 插件面实测，记录在案）**：
 
-1. **真机 Windows agent 的 job stdout 恒为空**：pc2 上 `job_submit` 即使 `Write-Output "job-ok"` 也返回 `exit=0` + 空 stdout/stderr——job 输出捕获此前仅在 V5 的 fake node 上验证过（T22–T25），真机 agent 的后台输出回传通路存在缺陷，**待修**。workaround：长任务用 `Start-Process -RedirectStandardOutput` 落盘 + `fs read` 轮询（本次 V5 在 pc2 的 53/53 证据即由此取得）。
+1. **真机 Windows agent 的 job stdout 恒为空**：pc2 上 `job_submit` 即使 `Write-Output "job-ok"` 也返回 `exit=0` + 空 stdout/stderr——job 输出捕获此前仅在 V5 的 fake node 上验证过（T22–T25），真机 agent 的后台输出回传通路存在缺陷。**同日定位并修复（A 机本地复现→根因→修复→T48 回归）**：根因是双重缺陷叠加——①agent 终态上报硬编码 `stdout:''`（`agent.ts` onDone），hub 存下空信封；②hub `job_output` 见信封存在即返回（恒空），**终态后不再派发节点**，而节点侧 `<home>/jobs/<id>/output.txt` 全量健在；V5 的 T23 只覆盖 running 期增量（信封未就绪、走派发），终态后路径是测试盲区。修复：后台 job 终态后 `job_output` 一律回节点取权威全量（节点离线才回退信封 inline）；agent 终态信封携带 inline 摘要（64KB 头尾截断，同前台 exec）；顺手修掉 `node-jobs.ts` out/err 双 push（终态输出翻倍）。V5 新增 **T48**（终态全量回节点取 + 中文标记逐字节 + 信封摘要），V5 53→**54 PASS / 0 FAIL**；真 agent 端到端复验：finished 后 job_output total=21 字符精确吻合、无翻倍。
 2. **桌面端 MCP 工具面同步 exec 约 30s 客户端超时**：超过即客户端放弃（hub 侧调用仍完成）；>25s 的任务一律 job 化或落盘轮询，不要同步等待。
 3. **大载荷不得经对话转录**：经会话转写 fs write 内容会引入字节损坏（本次 part2 SHA256 不匹配实锤，part1 完好）——凡 >数 KB 的文件传输一律本地脚本直读磁盘经 hub MCP 推送（node fetch 模式的延伸），推后必做双侧 SHA256 比对。

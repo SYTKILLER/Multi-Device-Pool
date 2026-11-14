@@ -13,7 +13,7 @@ import type { NodeConfig, WorkspaceConfig } from './config.js';
 import { Overlay } from './overlay.js';
 import { Journal } from './journal.js';
 import { AuditLog } from './audit.js';
-import { runExec, defaultShell, type ExecSpec } from './exec.js';
+import { runExec, defaultShell, truncate, type ExecSpec } from './exec.js';
 import { fsOp } from './fsops.js';
 import { NodeJobs } from './node-jobs.js';
 import { canonicalJson, type NodeIdentity } from './identity.js';
@@ -50,12 +50,16 @@ export class NodeAgent {
     this.journal = new Journal(path.join(opts.home, 'jobs')); // 01 §4.3：journal 持久化于 ~/.mdp/jobs/
     this.audit = new AuditLog(opts.home); // P1-5：审计链 <home>/audit.jsonl
     this.jobs = new NodeJobs(opts.home);
-    // 后台 job 终态上报：hub 侧 job_status 依赖（call_id 无对应 pending → 按 job_id 回注）+ 审计入链
+    // 后台 job 终态上报：hub 侧 job_status 依赖（call_id 无对应 pending → 按 job_id 回注）+ 审计入链。
+    // 信封携带 inline 摘要（64KB 头尾截断，同前台 exec）；权威全量在节点 <home>/jobs/<id>/output.txt，
+    // job_output 终态后仍派发回节点取（2026-11-14 修复：此前硬编码空串导致终态输出全链不可见）
     this.jobs.onDone = (job, outcome) => {
+      const so = truncate(outcome?.stdout ?? '');
+      const se = truncate(outcome?.stderr ?? '');
       this.audit.append({ call_id: job.job_id, kind: 'job_submit', cmd: job.cmd, exit: job.exit, result_hash: resultHash(outcome?.stdout ?? '', outcome?.stderr ?? '', job.exit) });
       this.#send({ t: 'call_result', call_id: `bg-${job.job_id}`, job_id: job.job_id, envelope: {
         status: 'ok', node_id: this.manifest.node_id, call_id: `bg-${job.job_id}`, ts_hub: 0,
-        result: { exit: job.exit, stdout: '', stderr: '', truncated: false },
+        result: { exit: job.exit, stdout: so.text, stderr: se.text, truncated: so.cut || se.cut },
         job: { job_id: job.job_id, state: job.state },
       } });
     };

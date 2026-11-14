@@ -205,7 +205,7 @@ const s2body = JSON.parse(s2.result.stdout);
 ok('T21 TTL 到期默认 deny：state=expired，信封 denied', s2body.state === 'expired' && s2body.envelope?.status === 'denied' && /TTL/.test(s2body.envelope?.error?.message ?? ''), JSON.stringify(s2body).slice(0, 300));
 
 // ---------- 后台 job ----------
-const b1 = await callTool('job_submit', { node: 'pc-test', cmd: `for ($i=1; $i -le 3; $i++) { Write-Output "tick-$i"; Start-Sleep -Milliseconds 300 }`, cwd: 'workspace:repo' });
+const b1 = await callTool('job_submit', { node: 'pc-test', cmd: `for ($i=1; $i -le 3; $i++) { Write-Output "tick-$i"; Start-Sleep -Milliseconds 300 }; Write-Output "后台中文标记"`, cwd: 'workspace:repo' });
 const BG = b1.job?.job_id;
 ok('T22 job_submit：立即返回 running', b1.status === 'ok' && b1.job?.state === 'running', JSON.stringify(b1).slice(0, 200));
 await sleep(800);
@@ -215,6 +215,15 @@ ok('T23 job_output：running 期增量输出（tick-1 可见）', o1.status === 
 await sleep(2500);
 const s3 = await callTool('job_status', { job_id: BG });
 ok('T24 job_status：后台 job finished', s3.status === 'ok' && JSON.parse(s3.result.stdout).state === 'finished', JSON.parse(s3.result.stdout)?.state);
+// 2026-11-14 真机缺陷回归：终态后 job_output 曾恒空——hub 信封被 agent 硬编码空串占位且不再派发节点。
+// 修复后：后台 job 终态仍回节点读权威全量（含中文逐字节）；job_status 终态信封带 inline 摘要。
+const o2 = await callTool('job_output', { output_ref: `job:${BG}#0` });
+const o2body = JSON.parse(o2.result.stdout);
+const s3env = JSON.parse(s3.result.stdout).envelope;
+ok('T48 job_output：终态全量回节点取（tick-3 + 中文标记逐字节）+ 终态信封带 inline 摘要',
+  o2.status === 'ok' && o2body.total > 0 && o2body.data.includes('tick-3') && o2body.data.includes('后台中文标记')
+    && (s3env?.result?.stdout ?? '').includes('后台中文标记'),
+  JSON.stringify(o2body).slice(0, 200));
 
 const b2 = await callTool('job_submit', { node: 'pc-test', cmd: `Start-Sleep -Seconds 30`, cwd: 'workspace:repo' });
 const BG2 = b2.job?.job_id;

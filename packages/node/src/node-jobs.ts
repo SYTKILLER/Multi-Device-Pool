@@ -94,8 +94,6 @@ export class NodeJobs {
     const append = (s: string): void => { try { fs.appendFileSync(outFile, s); } catch { /* 忽略写失败 */ } };
     child.stdout?.on('data', (c: Buffer) => { out.push(c); append(decodeBuf([c], shell)); });
     child.stderr?.on('data', (c: Buffer) => { err.push(c); append(decodeBuf([c], shell)); });
-    child.stdout?.on('data', (c: Buffer) => out.push(c));
-    child.stderr?.on('data', (c: Buffer) => err.push(c));
     child.on('error', (e: Error) => {
       job.state = 'failed';
       job.exit = null;

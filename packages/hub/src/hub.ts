@@ -324,8 +324,10 @@ export class Hub {
         const m = /^job:([\w-]+)#/.exec(ref);
         if (m) {
           const job = this.jobs.jobs.get(m[1]!);
-          if (job?.envelope?.result) {
-            // 审批 job 的全量输出已在 hub 留存
+          // 仅审批 job 的全量输出在 hub 留存（续跑结果存信封）。后台 job 的权威输出在节点侧
+          // <home>/jobs/<id>/output.txt（01 §4.2），终态也必须回节点取——终态信封只带 inline 摘要，
+          // 直接取信封会漏全量（2026-11-14 真机缺陷：终态后 job_output 恒空，V5 补 T48 回归）。
+          if (job?.envelope?.result && job.kind === 'approval') {
             const offset = Number(args['offset'] ?? 0);
             const limit = Number(args['limit'] ?? 8192);
             const full = (job.envelope.result.stdout ?? '') + (job.envelope.result.stderr ?? '');
@@ -333,11 +335,20 @@ export class Hub {
               result: { exit: null, stdout: JSON.stringify({ total: full.length, data: full.slice(offset, offset + limit), truncated: full.length > offset + limit }), stderr: '', truncated: false } };
           }
         }
-        // 其余转发节点 job 目录分页
+        // 其余转发节点 job 目录分页（后台 job 含已终态）
         const refNode = m ? this.jobs.jobs.get(m[1]!)?.node_id : undefined;
         const nodeName = refNode ?? String(args['node'] ?? '');
         const found = this.#findNode(nodeName);
-        if ('offlineMsg' in found) return this.#offlineEnvelope(found.offlineMsg, '');
+        if ('offlineMsg' in found) {
+          // 节点离线：后台 job 回退 hub 留存的 inline 摘要（终态上报携带）；没有则如实 offline
+          const job = m ? this.jobs.jobs.get(m[1]!) : undefined;
+          const inline = (job?.envelope?.result?.stdout ?? '') + (job?.envelope?.result?.stderr ?? '');
+          if (job?.kind === 'background' && inline) {
+            return { status: 'ok', node_id: 'hub', call_id: '', ts_hub: Date.now(),
+              result: { exit: null, stdout: JSON.stringify({ total: inline.length, data: inline, truncated: false }), stderr: '', truncated: false } };
+          }
+          return this.#offlineEnvelope(found.offlineMsg, '');
+        }
         return this.nodeServer.dispatch(found.handle.node_id, 'job_output', { output_ref: ref, offset: args['offset'], limit: args['limit'] }, 30000);
       }
 
