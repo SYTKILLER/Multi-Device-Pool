@@ -191,3 +191,28 @@
 **流程发现 → P1 待办**：
 1. **"停 npm 包装 ≠ 停 node agent"**：Windows 上杀父进程留下孤儿子进程且 hub 连接保持、`/nodes` 仍显示 online——hub 日志证实 TaskStop 期间零离线事件。**P1 待办**：`mdp node stop` 必须按进程树杀（`taskkill /T`）或 node agent 自持 PID 文件；hub 健康语义维持"socket 存活=在线"（对半死节点是诚实的），辅以心跳超时（已有）。
 2. curl GBK 坑（上文跨机实测段）与 V2 发现同族：**非 ASCII 载荷的 REST 示例统一用 node fetch**，写入 P1 GUI/API 文档规范。
+
+### P1 集成验收（跨机三节点 + 双机 verify，2026-11-14）✅
+
+按看板口径（01 §10）与 CROSS-MACHINE.md §7 执行，A 机 ZCode 桌面端会话（mdp 插件工具面 `mcp__plugin_mdp_mdp__*`）全程操作：
+
+**① 跨机三节点演练**（A hub 常驻 :7900 + A 本机节点 `a-local`（workspace `C:\Data\Multi-Device-Tool\ws-repo`）+ B 真节点 `pc2`）：
+
+| 项 | 结果 |
+|---|---|
+| a-local exec 中文回显 | `三节点演练-a-local-中文回显` 逐字节无损（exit 0） |
+| a-local fs 写/读 | 写 52 字节（14 中文×3 + 10 ASCII 精确吻合）→ 回读逐字节一致 |
+| pc2 exec 中文回显 | `中文回显验证` 逐字节无损（P1-9 跨机 exec 项，RTT 4ms） |
+| pc2 fs 写/读 | 写 44 字节（10 中文×3 + 14 ASCII 精确吻合）→ 回读逐字节一致 |
+| a-local 退场 | `mdp node stop a-local` 进程树终止，hub 干净记录 last_seen，A 机零孤儿（P1-6 之外的真实环境复验） |
+
+**② 双机 verify 全绿**：
+
+- **A 机**：`npm run build` 零 TS 错误 → `npm run verify` 五链全绿（V2 6/0、V2b 4/0、V3 显式接口组播回环 PASS、V4 5/0、**V5 53 PASS / 0 FAIL**）。
+- **pc2**：node agent 沙箱按设计锁死工作区（T18/T36 红队项实测生效：exec cwd 子路径夹紧拒绝、越界拒绝），无法触及其克隆目录——将 verify 依赖闭包（5 脚本 + hub/node/cli dist 共 55 文件，~185KB）gzip+base64 打包，经 fs 推入 `ws-repo/_verify/`、SHA256 逐片校验（两分片与 A 机本地哈希一致）后在沙箱内跑完整五链：**V2 6/0、V2b 4/0、V3 PASS（接口 192.168.1.88）、V4 5/0、V5 53 PASS / 0 FAIL**（v5-out.txt 全量 PASS 行落盘取证）。T35 junction 创建失败时优雅 SKIP 的设计在 Win10 得到验证。
+
+**③ 真机新发现（P1-9 插件面实测，记录在案）**：
+
+1. **真机 Windows agent 的 job stdout 恒为空**：pc2 上 `job_submit` 即使 `Write-Output "job-ok"` 也返回 `exit=0` + 空 stdout/stderr——job 输出捕获此前仅在 V5 的 fake node 上验证过（T22–T25），真机 agent 的后台输出回传通路存在缺陷，**待修**。workaround：长任务用 `Start-Process -RedirectStandardOutput` 落盘 + `fs read` 轮询（本次 V5 在 pc2 的 53/53 证据即由此取得）。
+2. **桌面端 MCP 工具面同步 exec 约 30s 客户端超时**：超过即客户端放弃（hub 侧调用仍完成）；>25s 的任务一律 job 化或落盘轮询，不要同步等待。
+3. **大载荷不得经对话转录**：经会话转写 fs write 内容会引入字节损坏（本次 part2 SHA256 不匹配实锤，part1 完好）——凡 >数 KB 的文件传输一律本地脚本直读磁盘经 hub MCP 推送（node fetch 模式的延伸），推后必做双侧 SHA256 比对。

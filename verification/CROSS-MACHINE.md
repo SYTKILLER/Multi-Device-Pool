@@ -116,7 +116,7 @@ const call=(name,args)=>fetch('http://127.0.0.1:7800/mcp',{method:'POST',headers
 
 > 前置：A 机 hub 运行中；mdp 插件已在 ZCode 桌面端安装启用（官方 UI 路径：插件市场→添加→粘贴仓库 `apps/zcode-plugin` 目录→个人→安装；**注册表直写无效，必须走 UI**）。新会话中工具前缀为 `mcp__plugin_mdp_mdp__*`（nodes/exec/fs/job_* 共 7 个）。
 
-1. pc2 入池（§3 命令）→ 新 ZCode 会话里 `nodes` 应显示 pc2 online=true。
-2. 会话内说「用 mdp 在 pc2 上执行 `Write-Output "中文回显验证"`」→ 预期 stdout 中文逐字节一致；若弹审批卡（内容闸），批准时可勾"记住前缀"（P1-2 学习式白名单生效后同类免批）。
-3. 三节点演练（§5）：A 机另开终端 `npm run node -- --hub 127.0.0.1:7900 --name a-local --ws repo=C:\Data\Multi-Device-Tool\ws-repo`（ws-repo 已建，gitignored），池内应有 pc2 + a-local 双真节点，各做一次 exec/fs。
-4. 双机各自 `npm run verify` 全绿 → P1 集成验收达成，回填 docs/verification-p0.md 并在看板置✅。
+1. pc2 入池（§3 命令）→ 新 ZCode 会话里 `nodes` 应显示 pc2 online=true。**✅ 2026-11-14 PASS**（pc2 重新入池，RTT 2-4ms）。
+2. 会话内说「用 mdp 在 pc2 上执行 `Write-Output "中文回显验证"`」→ 预期 stdout 中文逐字节一致；若弹审批卡（内容闸），批准时可勾"记住前缀"（P1-2 学习式白名单生效后同类免批）。**✅ PASS**（RTT 4ms，逐字节无损）。
+3. 三节点演练（§5）：A 机另开终端 `npm run node -- --hub 127.0.0.1:7900 --name a-local --ws repo=C:/Data/Multi-Device-Tool/ws-repo`（ws-repo 已建，gitignored；**Git Bash 下路径用正斜杠**——反斜杠会被 shell 吃掉成 `C:DataMulti-Device-Toolws-repo`），池内应有 pc2 + a-local 双真节点，各做一次 exec/fs。**✅ PASS**（a-local 复用本机持久 node_id；exec/fs 中文逐字节双向验证；`mdp node stop a-local` 进程树退场零孤儿）。
+4. 双机各自 `npm run verify` 全绿 → P1 集成验收达成，回填 docs/verification-p0.md 并在看板置✅。**✅ 2026-11-14 达成**——A 机常规跑法五链全绿（V5 53/53）；pc2 因 agent 沙箱触及其克隆不可行，采用"verify 闭包打包（55 文件）经 fs 推入工作区 + SHA256 校验 + 沙箱内跑五链"，V5 亦 53/53。**真机发现**：Windows agent 后台 job stdout 恒空（待修），长任务取证用 `Start-Process -RedirectStandardOutput` 落盘 + `fs read` 轮询；大载荷 fs write 一律本地脚本直读磁盘推送（对话转写会引入字节损坏），推后双侧 SHA256 比对。
