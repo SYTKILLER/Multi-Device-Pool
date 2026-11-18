@@ -5,3 +5,5 @@ export * from './journal.js';
 export * from './discovery.js';
 export * from './audit.js';
 export * from './ids.js';
+export * from './wire.js';
+export * from './transfer.js';

@@ -6,6 +6,7 @@
 import net from 'node:net';
 import { createHash, verify as cryptoVerify, createPublicKey, type KeyObject } from 'node:crypto';
 import type { NodeManifest, OverlayConfig, ResultEnvelope, JournalVerdictDetail, AuditRecord } from '@mdp/contract';
+import { WireDecoder, encodeBinFrame } from '@mdp/contract';
 import { saveHubDb, type HubDbShape } from './state.js';
 
 const canonicalJson = (v: unknown): string => {
@@ -32,6 +33,13 @@ export interface PendingCall {
   sentAt: number;
 }
 
+/** bin 流汇（P2-1）：节点流上来的块按 stream=call_id 路由到 transfer 编排器 */
+export interface BinSink {
+  onChunk: (seq: number, payload: Buffer) => void;
+  /** 节点侧流中断（bin_abort/断连） */
+  onAbort?: (reason: string) => void;
+}
+
 export interface NodeServerOptions {
   port: number;
   home: string;
@@ -53,6 +61,8 @@ export interface NodeServerOptions {
 export class NodeProtocolServer {
   readonly nodes = new Map<string, Conn>(); // node_id → conn
   readonly pending = new Map<string, PendingCall>();
+  /** P2-1：stream（=call_id）→ bin 汇。dispatch(binSink) 注册，编排器消费 */
+  readonly binSinks = new Map<string, BinSink>();
   private server: net.Server;
   private heartbeatTimer?: NodeJS.Timeout;
   readonly heartbeatMs: number;
@@ -89,19 +99,33 @@ export class NodeProtocolServer {
 
   /** 派发一次调用；离线立即 offline 信封，回复超时按 network/unknown 处理 */
   dispatch(nodeId: string, kind: string, params: Record<string, unknown>, deadlineMs: number): Promise<ResultEnvelope> {
+    return this.dispatchEx(nodeId, kind, params, deadlineMs).promise;
+  }
+
+  /**
+   * P2-1：派发 + 暴露 call_id（transfer 编排要在 call 行写出后立刻向同一连接流 bin 帧）
+   * + 可选 binSink（节点回流出块的流注册，先于 call 行——无竞态）。
+   * call 行在本调用内同步写出（Promise executor 同步段），随后即可 sendBin。
+   */
+  dispatchEx(nodeId: string, kind: string, params: Record<string, unknown>, deadlineMs: number, binSink?: BinSink): { promise: Promise<ResultEnvelope>; callId: string } {
     const conn = this.nodes.get(nodeId);
     const ts = Date.now();
     if (!conn) {
       const handle = this.opts.db.nodes[nodeId];
-      return Promise.resolve({
-        status: 'failed', node_id: nodeId, call_id: '', ts_hub: ts,
-        error: { class: 'offline', retryable: false, message: `节点 ${nodeId} 离线（最后心跳 ${handle ? handle.last_seen : '从未上线'}）` },
-      });
+      return {
+        promise: Promise.resolve({
+          status: 'failed', node_id: nodeId, call_id: '', ts_hub: ts,
+          error: { class: 'offline', retryable: false, message: `节点 ${nodeId} 离线（最后心跳 ${handle ? handle.last_seen : '从未上线'}）` },
+        }),
+        callId: '',
+      };
     }
-    return new Promise((resolve) => {
-      const callId = conn.allocCallId();
+    const callId = conn.allocCallId();
+    if (binSink) this.binSinks.set(callId, binSink);
+    const promise = new Promise<ResultEnvelope>((resolve) => {
       const timer = setTimeout(() => {
         this.pending.delete(callId);
+        this.binSinks.delete(callId);
         resolve({
           status: 'unknown', node_id: nodeId, call_id: callId, ts_hub: Date.now(),
           error: {
@@ -114,6 +138,14 @@ export class NodeProtocolServer {
       this.pending.set(callId, pending);
       conn.send({ t: 'call', call_id: callId, kind, params });
     });
+    return { promise, callId };
+  }
+
+  /** P2-1：向节点连接流一个 bin 帧（背压：write false 时等 drain） */
+  async sendBin(nodeId: string, stream: string, seq: number, payload: Buffer): Promise<void> {
+    const conn = this.nodes.get(nodeId);
+    if (!conn) throw new Error(`节点 ${nodeId} 离线，bin 帧发送中止`);
+    await conn.sendBin({ stream, seq, bytes: payload.length }, payload);
   }
 
   /** overlay 即时推送（01 §3.2：hub 下发 → 节点即时生效；在跑 job 跑完为止） */
@@ -150,35 +182,45 @@ export class Conn {
   manifest?: NodeManifest;
   node_id = '';
   rtt: number | null = null;
-  private buf = '';
   private callSeq = 0;
 
   constructor(sock: net.Socket, private readonly hub: NodeProtocolServer) {
     this.socket = sock;
-    let buf = '';
-    sock.on('data', (chunk: Buffer) => {
-      buf += chunk.toString('utf8');
-      let idx: number;
-      while ((idx = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, idx);
-        buf = buf.slice(idx + 1);
-        if (!line.trim()) continue;
-        let msg: Record<string, unknown>;
-        try { msg = JSON.parse(line) as Record<string, unknown>; } catch (e) {
-          this.hub.opts.onLog(`坏帧（JSON 解析失败）：${String((e as Error).message).slice(0, 100)}`);
-          continue;
+    // P2-1 混合帧解码：控制行 JSON 走 #handle；bin 块按 stream 路由 binSinks；流失步即断连
+    const dec = new WireDecoder({
+      onFrame: (msg) => {
+        if (msg['t'] === '__bad_json') {
+          this.hub.opts.onLog(`坏帧（JSON 解析失败）：${String(msg['raw']).slice(0, 100)}`);
+          return;
         }
         try { this.#handle(msg); } catch (e) {
           this.hub.opts.onLog(`帧处理异常 t=${String(msg['t'])}：${String((e as Error).message ?? e).slice(0, 200)}`);
         }
-      }
+      },
+      onBin: (h, payload) => {
+        const sink = this.hub.binSinks.get(h.stream);
+        if (!sink) return; // 迟到/未知流：丢弃
+        try { sink.onChunk(h.seq, payload); } catch (e) {
+          this.hub.opts.onLog(`bin 汇处理异常 stream=${h.stream}：${String((e as Error).message ?? e).slice(0, 200)}`);
+        }
+      },
+      onViolation: (reason) => {
+        this.hub.opts.onLog(`帧协议流失步，断连（${this.node_id || '未入册'}）：${reason}`);
+        sock.destroy();
+      },
     });
+    sock.on('data', (chunk: Buffer) => dec.push(chunk));
     sock.on('close', () => this.#offline());
     sock.on('error', () => this.#offline());
   }
 
   send(obj: Record<string, unknown>): void {
     try { this.socket.write(JSON.stringify(obj) + '\n'); } catch { /* 断线由 close 处理 */ }
+  }
+
+  /** bin 帧写出（背压：write false 等 drain） */
+  async sendBin(header: { stream: string; seq: number; bytes: number }, payload: Buffer): Promise<void> {
+    if (!this.socket.write(encodeBinFrame(header, payload))) await new Promise<void>((r) => this.socket.once('drain', r));
   }
 
   handle(): NodeHandle {
@@ -248,6 +290,14 @@ export class Conn {
         if (jobId) this.hub.opts.onJobResult?.(jobId, { ...env, node_id: this.node_id, ts_hub: Date.now() });
         return; // 迟到结果（对账后重发已被判死）丢弃
       }
+      case 'bin_abort': {
+        // P2-1：节点流块中断（socket 死/文件变更）→ 通知编排器弃 staging
+        const stream = String(msg['stream'] ?? '');
+        const sink = this.hub.binSinks.get(stream);
+        sink?.onAbort?.(String(msg['reason'] ?? '节点中止'));
+        this.hub.binSinks.delete(stream);
+        return;
+      }
       case 'pong': {
         const ts = Number(msg['ts'] ?? 0);
         if (ts) this.rtt = Date.now() - ts;
@@ -295,6 +345,14 @@ export class Conn {
     if (!this.node_id || !this.hub.nodes.has(this.node_id)) return;
     this.hub.nodes.delete(this.node_id);
     this.hub.opts.onLog(`节点离线：${this.node_id}`);
+    // 在途 bin 流一并作废（编排器凭 onAbort 弃 staging）
+    for (const [stream, sink] of this.hub.binSinks) {
+      const p = this.hub.pending.get(stream);
+      if (p && p.node_id === this.node_id) {
+        sink.onAbort?.('节点断连');
+        this.hub.binSinks.delete(stream);
+      }
+    }
     // 在途调用立即判 unknown（离线后无法送达结果；重连对账兜底）
     for (const p of [...this.hub.pending.values()]) {
       if (p.node_id === this.node_id) {

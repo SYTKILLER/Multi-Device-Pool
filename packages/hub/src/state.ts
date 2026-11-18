@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import type { NodeManifest, OverlayConfig, AuditRecord } from '@mdp/contract';
+import type { NodeManifest, OverlayConfig, AuditRecord, LineageRecord } from '@mdp/contract';
 
 /** 自述对账用的审计记录（P1-3）：只留对账所需字段，最近 50 条 */
 export type NodeAuditRecord = Pick<AuditRecord, 'seq' | 'kind' | 'op' | 'cmd' | 'ts'>;
@@ -17,6 +17,8 @@ export interface HubDbShape {
   nodes: Record<string, { manifest: NodeManifest; last_seen: string; overlay?: OverlayConfig; degraded?: { reason: string; at: string } }>;
   /** P1-5 审计锚定：hub 已验证到的链尾（broken 非空 = 校验失败，含断点详情）；recent 供自述对账 */
   audit?: Record<string, { last_seq: number; last_hash: string; broken?: string; recent?: NodeAuditRecord[] }>;
+  /** P2-2 血统（0.3.0 通道就绪）：workspace_id → 最近血统记录（revision 单调递增，hub 是唯一签发者） */
+  lineage?: Record<string, LineageRecord>;
 }
 
 export const loadHubDb = (home: string): HubDbShape => {

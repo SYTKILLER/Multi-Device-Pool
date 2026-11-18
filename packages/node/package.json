@@ -15,7 +15,8 @@
     "build": "tsc -p ."
   },
   "dependencies": {
-    "@mdp/contract": "^0.2.0"
+    "@mdp/contract": "^0.3.0",
+    "@mdp/transfer": "^0.1.0"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",

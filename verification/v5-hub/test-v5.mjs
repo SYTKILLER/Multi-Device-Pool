@@ -126,7 +126,8 @@ ok('T1 initialize：serverInfo=mdp', initA.serverInfo?.name === 'mdp', JSON.stri
 
 // ---------- 工具面 ----------
 const tools = (await callRpc('tools/list', {})).tools;
-ok('T2 静态基线 7 工具（01 §4.1）', ['nodes', 'exec', 'fs', 'job_submit', 'job_status', 'job_output', 'job_cancel'].every((n) => tools.some((t) => t.name === n)) && tools.length === 7,
+ok('T2 静态基线 9 工具（01 §4.1 七件套 + P2 transfer_push/transfer_fetch）',
+  ['nodes', 'exec', 'fs', 'job_submit', 'job_status', 'job_output', 'job_cancel', 'transfer_push', 'transfer_fetch'].every((n) => tools.some((t) => t.name === n)) && tools.length === 9,
   `tools=${tools.map((t) => t.name).join(',')}`);
 
 const nodes = await callTool('nodes', {});
@@ -208,10 +209,15 @@ ok('T21 TTL 到期默认 deny：state=expired，信封 denied', s2body.state ===
 const b1 = await callTool('job_submit', { node: 'pc-test', cmd: `for ($i=1; $i -le 3; $i++) { Write-Output "tick-$i"; Start-Sleep -Milliseconds 300 }; Write-Output "后台中文标记"`, cwd: 'workspace:repo' });
 const BG = b1.job?.job_id;
 ok('T22 job_submit：立即返回 running', b1.status === 'ok' && b1.job?.state === 'running', JSON.stringify(b1).slice(0, 200));
-await sleep(800);
-const o1 = await callTool('job_output', { output_ref: `job:${BG}#0` });
-const o1body = JSON.parse(o1.result.stdout);
-ok('T23 job_output：running 期增量输出（tick-1 可见）', o1.status === 'ok' && o1body.data.includes('tick-1'), JSON.stringify(o1body).slice(0, 200));
+// T23 原为固定 sleep(800) 后单次轮询——Windows PowerShell 冷启动延迟抖动会超 800ms（2026-11-19 负载下偶现 tick-1 缺席），
+// 改为 ≤4s 宽容轮询直至 tick-1 出现：断言语义不变（running 期增量输出可见），去掉对 spawn 时限的紧假设
+let o1body = { data: '' };
+for (let i = 0; i < 16 && !o1body.data.includes('tick-1'); i++) {
+  await sleep(250);
+  const o1 = await callTool('job_output', { output_ref: `job:${BG}#0` });
+  o1body = JSON.parse(o1.result.stdout);
+}
+ok('T23 job_output：running 期增量输出（tick-1 可见）', o1body.data.includes('tick-1'), JSON.stringify(o1body).slice(0, 200));
 await sleep(2500);
 const s3 = await callTool('job_status', { job_id: BG });
 ok('T24 job_status：后台 job finished', s3.status === 'ok' && JSON.parse(s3.result.stdout).state === 'finished', JSON.parse(s3.result.stdout)?.state);

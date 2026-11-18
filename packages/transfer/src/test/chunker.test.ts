@@ -170,3 +170,44 @@ test('atomicReplace：Windows 让位舞步单测', async () => {
     assert.ok(!fs.existsSync(final + '.mdp-bak'));
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+// 2026-11-19 A 机互审发现修复的回归（02-跨机协作 §3-4）：staging 丢失而 state 文件残留时，
+// 旧实现恢复幽灵 received → missing() 少报 → finalize 永久哈希不符死锁；修复 = resume=false 时清集合
+test('断点续传退化：staging 丢失 → 幽灵 received 清零重来', async () => {
+  const root = tmpRoot();
+  try {
+    const src = path.join(root, 'src-g.bin');
+    const payload = mkPayload(2 * CHUNK_SIZE);
+    fs.writeFileSync(src, payload);
+    const m = await chunkFile(src);
+    const final = path.join(root, 'dst-g.bin');
+    // 第一程：收块 0 后静默关闭（staging 与状态留存）
+    const a1 = new Assembler({ finalPath: final, manifest: m });
+    await a1.open();
+    await a1.writeChunk(m.chunks[0]!, payload.subarray(0, CHUNK_SIZE));
+    await a1.close();
+    // 模拟 staging 被清理而 .mdp-part.json 残留（现实触发：用户/清理工具删 .mdp-part 留 .json）
+    fs.rmSync(final + '.mdp-part', { force: true });
+    // 第二程：必须按全新处理（received=0，缺全部块），而非幽灵恢复
+    const a2 = new Assembler({ finalPath: final, manifest: m });
+    await a2.open();
+    assert.equal(a2.receivedCount, 0, '幽灵 received 已清零');
+    assert.deepEqual(a2.missing(), [0, 1], '差量=全部块');
+    for (const c of m.chunks) await a2.writeChunk(c, payload.subarray(c.offset, c.offset + c.size));
+    const r = await a2.finalize();
+    assert.equal((await readAll(final)).compare(payload), 0);
+    assert.equal(r.fileSha256, m.fileSha256);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+// 2026-11-19 A 机互审发现修复的回归：ENOENT 原先入让位舞步闸 → staging 缺失时会把健康的既有目标移进 .mdp-bak 后抛错（破坏原子性）
+test('atomicReplace：staging 缺失 → 原样抛错且既有目标不被让位', async () => {
+  const root = tmpRoot();
+  try {
+    const final = path.join(root, 'f2.bin');
+    fs.writeFileSync(final, 'PRECIOUS');
+    await assert.rejects(() => atomicReplace(path.join(root, 'missing-staging.bin'), final), /ENOENT/);
+    assert.equal((await readAll(final)).toString(), 'PRECIOUS', '既有目标未被移位');
+    assert.ok(!fs.existsSync(final + '.mdp-bak'), '无 bak 残留');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

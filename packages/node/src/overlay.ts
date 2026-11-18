@@ -187,6 +187,14 @@ export class Overlay {
     return { kind: 'allow', dir: dir.dir, ws: dir.ws };
   }
 
+  /** transfer 等级判定（P2-1 接线）：send=读类 ≥ read-only；receive=写类 ≥ workspaces（路径域另查） */
+  checkTransferLevel(op: 'send' | 'receive'): GateVerdict {
+    const lvl: OverlayLevel = this.#cfg.levels.transfer;
+    if (!this.#cfg.enabled || lvl === 'deny') return { kind: 'deny', message: `overlay：transfer=${this.#cfg.enabled ? lvl : 'disabled'}，传输被池层禁止` };
+    if (op === 'send') return levelAtLeast(lvl, 'read-only') ? { kind: 'allow' } : { kind: 'deny', message: `overlay：transfer=${lvl} 低于 read-only，send 被拒绝` };
+    return levelAtLeast(lvl, 'workspaces') ? { kind: 'allow' } : { kind: 'deny', message: `overlay：transfer=${lvl} 低于 workspaces，receive 被拒绝` };
+  }
+
   /** busy 检测（01 §5.2 v1）：写类操作前查 .git/index.lock → busy */
   busyCheck(wsPath: string): string | undefined {
     const lock = path.join(wsPath, '.git', 'index.lock');

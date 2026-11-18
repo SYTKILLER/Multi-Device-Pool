@@ -8,7 +8,8 @@ import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import type { NodeManifest, ResultEnvelope } from '@mdp/contract';
+import type { NodeManifest, ResultEnvelope, TransferOutcome, TransferReceiveParams, TransferSendParams } from '@mdp/contract';
+import { WireDecoder, encodeBinFrame, MAX_TRANSFER_BYTES } from '@mdp/contract';
 import type { NodeConfig, WorkspaceConfig } from './config.js';
 import { Overlay } from './overlay.js';
 import { Journal } from './journal.js';
@@ -16,6 +17,7 @@ import { AuditLog } from './audit.js';
 import { runExec, defaultShell, truncate, type ExecSpec } from './exec.js';
 import { fsOp } from './fsops.js';
 import { NodeJobs } from './node-jobs.js';
+import { TransferManager, buildManifest } from './transfer-ops.js';
 import { canonicalJson, type NodeIdentity } from './identity.js';
 import { resultHash } from '@mdp/contract';
 
@@ -38,6 +40,7 @@ export class NodeAgent {
   readonly journal: Journal;
   readonly audit: AuditLog;
   readonly jobs: NodeJobs;
+  readonly transfers = new TransferManager();
   private socket?: net.Socket;
   private connected = false;
   private stopped = false;
@@ -85,8 +88,8 @@ export class NodeAgent {
       arch: os.arch(),
       shell: defaultShell(),
       // P1-4 测试钩子：MDP_AGENT_VERSION 模拟旧版本节点（版本协商验收）
-      agent_version: process.env['MDP_AGENT_VERSION'] ?? '0.1.0',
-      capabilities: ['exec', 'fs'],
+      agent_version: process.env['MDP_AGENT_VERSION'] ?? '0.3.0',
+      capabilities: ['exec', 'fs', 'transfer'],
       workspaces: wsEntries,
       available: 'session',
       native_enforcement: 'none', // P0 无 harness hook 接入（01 §3.4：none → GUI 标记"无强制"）
@@ -120,7 +123,15 @@ export class NodeAgent {
     const [host, port] = this.opts.config.hub.split(':');
     const sock = net.connect(Number(port), host);
     this.socket = sock;
-    let buf = '';
+    // P2-1 混合帧：控制行 JSON + t:'bin' 定长二进制块（contract/wire.ts；向后兼容旧 hub）
+    const dec = new WireDecoder({
+      onFrame: (msg) => { if (msg['t'] !== '__bad_json') void this.#handle(msg); },
+      onBin: (h, payload) => this.transfers.feed(h.stream, h.seq, payload, () => this.journal.mark(h.stream, 'started')),
+      onViolation: (reason) => {
+        this.log(`帧协议流失步，断连重连：${reason}`);
+        sock.destroy();
+      },
+    });
     sock.on('connect', () => {
       this.connected = true;
       this.retryMs = 500;
@@ -129,21 +140,11 @@ export class NodeAgent {
       const sig = this.opts.identity.sign(canonicalJson(m));
       this.#send({ t: 'hello', manifest: m, sig, pubkey: this.opts.identity.publicKeyHex });
     });
-    sock.on('data', (chunk: Buffer) => {
-      buf += chunk.toString('utf8');
-      let idx: number;
-      while ((idx = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, idx);
-        buf = buf.slice(idx + 1);
-        if (!line.trim()) continue;
-        let msg: Record<string, unknown>;
-        try { msg = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
-        void this.#handle(msg);
-      }
-    });
+    sock.on('data', (chunk: Buffer) => dec.push(chunk));
     sock.on('close', () => {
       if (!this.connected) return; // 连接失败走 error 分支
       this.connected = false;
+      this.transfers.pauseAll();
       this.log('与 hub 断开，准备重连');
       this.#retry();
     });
@@ -162,6 +163,13 @@ export class NodeAgent {
 
   #send(obj: Record<string, unknown>): void {
     this.socket?.write(JSON.stringify(obj) + '\n');
+  }
+
+  /** bin 帧发送（transfer_send 流块）；write 返回 false 时等 drain，防内存堆积 */
+  async #sendBin(header: { stream: string; seq: number; bytes: number }, payload: Buffer): Promise<void> {
+    const sock = this.socket;
+    if (!sock || this.stopped) throw new Error('socket 不可用，发送中止');
+    if (!sock.write(encodeBinFrame(header, payload))) await new Promise<void>((r) => sock.once('drain', r));
   }
 
   /** P1-3：overlay 生效即同步结构化自述（等级轴如实反映），变更则 manifest_version++ 重报（01 §3.4 变更即重报） */
@@ -213,6 +221,26 @@ export class NodeAgent {
         // P1-5：hub 定期锚定拉取（读类，无副作用）
         this.#send({ t: 'audit_records', records: this.audit.readSince(Number(msg['since'] ?? 0)), last_seq: this.audit.seq });
         return;
+      case 'lineage': {
+        // P2-2 血统指令（hub 持久化后下发）：更新 workspace 条目并按 manifest_version++ 重报签名 manifest。
+        // 旧语义保护：revision 只增不减；superseded/source_node 如实落条目。
+        const updates = (msg['updates'] as Array<{ workspace_id: string; revision: number; superseded?: boolean; source_node?: string }>) ?? [];
+        let changed = false;
+        for (const u of updates) {
+          const ws = this.manifest.workspaces.find((w) => w.workspace_id === u.workspace_id);
+          if (!ws) continue;
+          if (u.revision > ws.revision) { ws.revision = u.revision; changed = true; }
+          if (u.superseded !== undefined && u.superseded !== ws.superseded) { ws.superseded = u.superseded; changed = true; }
+          if (u.source_node !== undefined && u.source_node !== ws.source_node) { ws.source_node = u.source_node; changed = true; }
+        }
+        if (changed) {
+          this.manifest.manifest_version += 1;
+          const sig = this.opts.identity.sign(canonicalJson(this.manifest));
+          this.#send({ t: 'hello', manifest: this.manifest, sig, pubkey: this.opts.identity.publicKeyHex });
+          this.log(`血统指令生效：manifest_version=${this.manifest.manifest_version}`);
+        }
+        return;
+      }
       case 'job_continue': {
         // 审批通过：hub 把原始 call 原文回传；approved=true 表示内容闸已由人工放行（deny/busy 检查仍然执行）
         await this.#dispatch(msg['call'] as Record<string, unknown>, msg['job_id'] as string | undefined, true);
@@ -317,6 +345,69 @@ export class NodeAgent {
           status: 'ok', node_id: this.manifest.node_id, call_id: callId, ts_hub: 0,
           result: { exit: 0, stdout: JSON.stringify(outcome.data), stderr: '', truncated: false },
         } });
+      }
+
+      if (kind === 'transfer_receive') {
+        // P2-1 接线：manifest 随 call 行走，净荷走 bin 帧（stream=call_id）。门：transfer 等级 → 路径域 → busy → 总量上限
+        const p = params as unknown as TransferReceiveParams;
+        const lvl = this.overlay.checkTransferLevel('receive');
+        if (lvl.kind === 'deny') return this.#send({ t: 'call_result', call_id: callId, job_id: jobId, envelope: denyEnvelope('permission', lvl.message) });
+        if (!p.manifest || p.manifest.size > MAX_TRANSFER_BYTES) {
+          return this.#send({ t: 'call_result', call_id: callId, job_id: jobId, envelope: { status: 'failed', node_id: this.manifest.node_id, call_id: callId, ts_hub: 0,
+            error: { class: 'permission', retryable: false, message: `transfer 总量超上限（${p.manifest?.size ?? '?'} > ${MAX_TRANSFER_BYTES} 字节；P3 job 化前不接受更大载荷）` } } });
+        }
+        const pathRef = `workspace:${p.workspace}/${String(p.rel_path ?? '').replace(/\\/g, '/')}`;
+        const r = this.overlay.resolveFsPath(pathRef);
+        if (!r.ok) return this.#send({ t: 'call_result', call_id: callId, job_id: jobId, envelope: denyEnvelope('permission', r.message) });
+        const busy = this.overlay.busyCheck(r.ws.path);
+        if (busy) return this.#send({ t: 'call_result', call_id: callId, job_id: jobId, envelope: denyEnvelope('busy', busy) });
+        this.journal.mark(callId, 'received');
+        const outcome = await this.transfers.receive(callId, p, r.abs, () => this.journal.mark(callId, 'started'));
+        if (outcome.failed) {
+          // 缺块/拒收差量在 result.stdout；journal 收敛为 finished(exit=1)——staging 留存，续传按同 transfer_id
+          this.journal.mark(callId, 'finished', { exit: 1 });
+          return this.#send({ t: 'call_result', call_id: callId, job_id: jobId, envelope: {
+            status: 'failed', node_id: this.manifest.node_id, call_id: callId, ts_hub: 0,
+            result: { exit: 1, stdout: JSON.stringify(outcome), stderr: '', truncated: false },
+            error: { class: 'crash', retryable: true, message: `transfer ${p.transfer_id} 未完成：${outcome.failed}` },
+          } });
+        }
+        this.journal.mark(callId, 'finished', { exit: 0 });
+        this.audit.append({ call_id: callId, kind: 'transfer', cmd: `receive ${pathRef}`, op: 'receive', exit: 0, result_hash: resultHash(outcome.file_sha256, '', 0) });
+        return this.#send({ t: 'call_result', call_id: callId, job_id: jobId, envelope: {
+          status: 'ok', node_id: this.manifest.node_id, call_id: callId, ts_hub: 0,
+          result: { exit: 0, stdout: JSON.stringify(outcome), stderr: '', truncated: false },
+        } });
+      }
+
+      if (kind === 'transfer_send') {
+        // P2-1 接线：先回 manifest 信封，再流 bin 帧（顺序即协议）。读类：不 journal（可透明重发）
+        const p = params as unknown as TransferSendParams;
+        const lvl = this.overlay.checkTransferLevel('send');
+        if (lvl.kind === 'deny') return this.#send({ t: 'call_result', call_id: callId, job_id: jobId, envelope: denyEnvelope('permission', lvl.message) });
+        const r = this.overlay.resolveFsPath(String(p.path ?? ''));
+        if (!r.ok) return this.#send({ t: 'call_result', call_id: callId, job_id: jobId, envelope: denyEnvelope('permission', r.message) });
+        let manifest;
+        try {
+          const st = fs.statSync(r.abs);
+          if (!st.isFile()) return this.#send({ t: 'call_result', call_id: callId, job_id: jobId, envelope: denyEnvelope('permission', `transfer_send 目标不是文件：${p.path}`) });
+          if (st.size > MAX_TRANSFER_BYTES) return this.#send({ t: 'call_result', call_id: callId, job_id: jobId, envelope: denyEnvelope('permission', `transfer 总量超上限（${st.size} > ${MAX_TRANSFER_BYTES} 字节）`) });
+          manifest = await buildManifest(r.abs);
+        } catch (e) {
+          return this.#send({ t: 'call_result', call_id: callId, job_id: jobId, envelope: denyEnvelope('permission', `transfer_send 读取失败：${String((e as Error).message)}`) });
+        }
+        this.#send({ t: 'call_result', call_id: callId, job_id: jobId, envelope: {
+          status: 'ok', node_id: this.manifest.node_id, call_id: callId, ts_hub: 0,
+          result: { exit: 0, stdout: JSON.stringify({ transfer_id: p.transfer_id, manifest }), stderr: '', truncated: false },
+        } });
+        try {
+          await this.transfers.send(callId, r.abs, manifest, undefined, (h, buf) => this.#sendBin(h, buf));
+          this.audit.append({ call_id: callId, kind: 'transfer', cmd: `send ${String(p.path)}`, op: 'send', exit: 0, result_hash: resultHash(manifest.fileSha256, '', 0) });
+        } catch (e) {
+          // 流中断（socket 死/文件变更）：告知 hub 弃 staging，防其等帧超时
+          this.#send({ t: 'bin_abort', stream: callId, reason: String((e as Error).message ?? e) });
+        }
+        return;
       }
 
       if (kind === 'job_status') {

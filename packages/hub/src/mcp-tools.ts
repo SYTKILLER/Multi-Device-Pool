@@ -103,4 +103,31 @@ export const TOOL_DEFS: ToolDef[] = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'transfer_push',
+    description: '（P2）把 hub 宿主机上的本地文件分块推送进目标节点工作区，绕过对话转录（防大载荷损坏）；落地后全量 sha256 校验，返回 TransferOutcome（file_sha256/bytes）。src 为 hub 宿主绝对路径；path 为目标工作区引用，如 workspace:repo/dist/a.bin。上限 256 MiB；节点 agent ≥0.3.0 才可用。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...nodeRef,
+        src: { type: 'string', description: 'hub 宿主机上的源文件绝对路径' },
+        path: { type: 'string', description: '目标引用，如 workspace:repo/dist/a.bin' },
+      },
+      required: ['node', 'src', 'path'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'transfer_fetch',
+    description: '（P2）把目标节点工作区里的文件分块取回 hub 宿主机收件箱（<hub-home>/inbox/<transfer_id>/文件名），绕过对话转录；返回 TransferOutcome 含 inbox_path 与 file_sha256。path 为源节点工作区引用，如 workspace:repo/dist/a.bin。上限 256 MiB；节点 agent ≥0.3.0 才可用。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...nodeRef,
+        path: { type: 'string', description: '源引用，如 workspace:repo/dist/a.bin' },
+      },
+      required: ['node', 'path'],
+      additionalProperties: false,
+    },
+  },
 ];

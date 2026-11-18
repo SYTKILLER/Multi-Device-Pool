@@ -51,6 +51,7 @@ export class Assembler {
     this.#fh = await fsp.open(this.stagingPath, resume ? 'r+' : 'w');
     const cur = (await this.#fh.stat()).size;
     if (cur !== this.#manifest.size) await this.#fh.truncate(this.#manifest.size);
+    if (!resume) this.#received.clear(); // 幽灵 received 防线（2026-11-19 互审发现）：state 文件在而 staging 丢失 → 全新重来，不得带旧集合
     if (resume && this.#received.size > 0) {
       console.log(`[assemble] 续传：已收 ${this.#received.size}/${this.#manifest.chunks.length} 块`);
     }
@@ -122,14 +123,14 @@ export class Assembler {
   }
 }
 
-/** 原子替换：目标存在时先让位（Windows rename 不覆盖既有文件） */
+/** 原子替换：目标存在时先让位（Windows rename 遇锁定目标 EPERM）。ENOENT 不进舞步——staging 缺失时让位会移走健康目标（互审发现） */
 export const atomicReplace = async (staging: string, final: string): Promise<void> => {
   try {
     await fsp.rename(staging, final);
     return;
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
-    if (code !== 'EPERM' && code !== 'EEXIST' && code !== 'ENOENT') throw e;
+    if (code !== 'EPERM' && code !== 'EEXIST') throw e;
   }
   const bak = final + '.mdp-bak';
   await fsp.rm(bak, { force: true });

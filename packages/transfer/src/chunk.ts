@@ -4,11 +4,12 @@
  */
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
+import type { ChunkMeta, ChunkedFile } from '@mdp/contract';
+
+// 类型上移 contract（0.3.0 传输协议两端共用），此处 re-export 保持 API 不变
+export type { ChunkMeta, ChunkedFile };
 
 export const CHUNK_SIZE = 1024 * 1024;
-
-export interface ChunkMeta { index: number; offset: number; size: number; sha256: string }
-export interface ChunkedFile { size: number; fileSha256: string; chunkSize: number; chunks: ChunkMeta[] }
 
 export const sha256Buffer = (buf: Buffer): string => createHash('sha256').update(buf).digest('hex');
 

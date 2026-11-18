@@ -5,7 +5,7 @@
  */
 import { createHash } from 'node:crypto';
 
-export type AuditKind = 'exec' | 'fs' | 'job_submit';
+export type AuditKind = 'exec' | 'fs' | 'job_submit' | 'transfer';
 
 export interface AuditRecord {
   seq: number;

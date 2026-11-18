@@ -1,9 +1,13 @@
 /**
  * Hub 核心：MCP JSON-RPC 分发 + 工具路由 + 信封裁决（01 §4.3 错误分类学的 hub 侧落地）。
  */
-import type { ResultEnvelope, OverlayConfig } from '@mdp/contract';
-import { STANDARD } from '@mdp/contract';
-import { NodeProtocolServer, type NodeHandle } from './nodeproto.js';
+import fs from 'node:fs';
+import fsp from 'node:fs/promises';
+import path from 'node:path';
+import type { ResultEnvelope, OverlayConfig, ChunkedFile, TransferOutcome, LineageRecord } from '@mdp/contract';
+import { STANDARD, MAX_TRANSFER_BYTES } from '@mdp/contract';
+import { chunkFile, Assembler } from '@mdp/transfer';
+import { NodeProtocolServer, type NodeHandle, type BinSink } from './nodeproto.js';
 import { HubJobs, type HubJob } from './jobs.js';
 import { TOOL_DEFS } from './mcp-tools.js';
 import { saveHubDb, type HubDbShape } from './state.js';
@@ -199,7 +203,7 @@ export class Hub {
   }
 
   /** P1-4 版本协商：能力被禁用 → permission 类拒绝（永不重试）+ 升级提示 */
-  #featureGate(nodeId: string, cap: 'exec' | 'fs'): ResultEnvelope | undefined {
+  #featureGate(nodeId: string, cap: 'exec' | 'fs' | 'transfer'): ResultEnvelope | undefined {
     const rec = this.opts.db.nodes[nodeId];
     if (!rec) return undefined;
     const st = featureStatus(rec.manifest)[cap];
@@ -210,6 +214,243 @@ export class Hub {
       };
     }
     return undefined;
+  }
+
+  // ===== P2-1 transfer 编排（hub-star：hub↔节点双向；节点间直传不做）=====
+  // 信封 result.stdout 携带 TransferOutcome JSON（与 exec/fs 同形）；血统记录随成功落地。
+
+  #parseOutcome(env: ResultEnvelope): TransferOutcome | undefined {
+    try { return JSON.parse(env.result?.stdout ?? '') as TransferOutcome; } catch { return undefined; }
+  }
+
+  #transferFail(message: string, cls: 'permission' | 'crash' = 'permission'): ResultEnvelope {
+    return { status: 'failed', node_id: '', call_id: '', ts_hub: Date.now(), error: { class: cls, retryable: false, message } };
+  }
+
+  /** 向节点流一个 hub 宿主文件的块（全量或差量），带背压 */
+  async #streamChunks(nodeId: string, stream: string, src: string, manifest: ChunkedFile, only?: number[]): Promise<void> {
+    const fh = await fsp.open(src, 'r');
+    try {
+      for (const idx of only ?? manifest.chunks.map((c) => c.index)) {
+        const meta = manifest.chunks[idx];
+        if (!meta) throw new Error(`块索引越界：${idx}`);
+        const buf = Buffer.alloc(meta.size);
+        await fh.read(buf, 0, meta.size, meta.offset);
+        await this.nodeServer.sendBin(nodeId, stream, idx, buf);
+      }
+    } finally {
+      await fh.close();
+    }
+  }
+
+  /** 血统：hub 持久化 LineageRecord + 向节点下发 LineageDirective（revision 单调递增） */
+  #recordLineage(nodeId: string, wsName: string, rec: Omit<LineageRecord, 'revision' | 'workspace_id'>, bump = true): void {
+    const ws = this.opts.db.nodes[nodeId]?.manifest.workspaces.find((w) => w.name === wsName);
+    if (!ws) return;
+    // revision 基底 = max(既有血统序号, 节点当前 revision + 1)——节点 manifest 的 revision 初值是 mtime 秒（粗代理），血统序号必须越过它
+    const prev = this.opts.db.lineage?.[ws.workspace_id];
+    const revision = bump ? Math.max(prev?.revision ?? 0, (ws.revision ?? 0) + 1) : (prev?.revision ?? ws.revision ?? 0);
+    const full: LineageRecord = { ...rec, workspace_id: ws.workspace_id, revision };
+    if (!this.opts.db.lineage) this.opts.db.lineage = {};
+    this.opts.db.lineage[ws.workspace_id] = full;
+    saveHubDb(this.opts.home, this.opts.db);
+    if (bump) {
+      // 指令下发（superseded 签发语义属 P2-2 实装；此处只推 revision）
+      const conn = this.nodeServer.nodes.get(nodeId);
+      conn?.send({ t: 'lineage', updates: [{ workspace_id: ws.workspace_id, revision: full.revision }] });
+    }
+    this.log(`血统：ws=${ws.workspace_id.slice(0, 8)}… revision=${full.revision} origin=${full.origin} sha=${full.file_sha256.slice(0, 12)}…`);
+  }
+
+  /** push：hub 宿主文件 → 节点工作区。全量流块 → 差量重流（≤3 次）→ 血统 */
+  async #transferPush(nodeId: string, args: Record<string, unknown>): Promise<ResultEnvelope> {
+    const src = String(args['src'] ?? '');
+    const pathArg = String(args['path'] ?? '');
+    if (!src || !pathArg) return this.#transferFail('transfer_push 需要 src（hub 宿主绝对路径）与 path（目标 workspace:<name>/<相对路径>）');
+    const tm = /^workspace:([A-Za-z0-9_-]+)[/\\](.+)$/.exec(pathArg);
+    if (!tm) return this.#transferFail(`path 须形如 workspace:repo/dist/a.bin（目标节点的工作区引用），实得 ${pathArg}`);
+    const wsName = tm[1]!;
+    const relPath = tm[2]!.replace(/\\/g, '/');
+    let manifest: ChunkedFile;
+    try {
+      const st = fs.statSync(src);
+      if (!st.isFile()) return this.#transferFail(`src 不是文件：${src}`);
+      if (st.size > MAX_TRANSFER_BYTES) return this.#transferFail(`文件超过单次 transfer 上限（${st.size} > ${MAX_TRANSFER_BYTES} 字节；P3 job 化前不接受更大载荷）`);
+      manifest = await chunkFile(src, Number(args['chunk_size']) || undefined);
+    } catch (e) {
+      return this.#transferFail(`src 读取失败：${String((e as Error).message)}`);
+    }
+    const transferId = `t-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const deadline = Math.min(600000, 30000 + manifest.chunks.length * 500);
+    const params = { transfer_id: transferId, workspace: wsName, rel_path: relPath, manifest };
+    const { promise, callId } = this.nodeServer.dispatchEx(nodeId, 'transfer_receive', params, deadline);
+    if (!callId) return await promise; // offline 信封
+    let env: ResultEnvelope;
+    try {
+      await this.#streamChunks(nodeId, callId, src, manifest);
+      env = await promise;
+    } catch (e) {
+      return this.#transferFail(`bin 帧流送失败：${String((e as Error).message)}`, 'crash');
+    }
+    // 差量重流（节点报 missing；Assembler 幂等续传，同 transfer_id）
+    for (let attempts = 0; env.status === 'failed' && attempts < 3; attempts++) {
+      const oc = this.#parseOutcome(env);
+      if (!oc?.missing?.length) break;
+      this.log(`transfer ${transferId} 差量重流（第 ${attempts + 1} 次，缺 ${oc.missing.length} 块）`);
+      const retry = this.nodeServer.dispatchEx(nodeId, 'transfer_receive', params, deadline);
+      if (!retry.callId) return await retry.promise;
+      try {
+        await this.#streamChunks(nodeId, retry.callId, src, manifest, oc.missing);
+        env = await retry.promise;
+      } catch (e) {
+        return this.#transferFail(`差量重流失败：${String((e as Error).message)}`, 'crash');
+      }
+    }
+    if (env.status === 'ok') {
+      const oc = this.#parseOutcome(env);
+      if (oc && oc.file_sha256 === manifest.fileSha256) {
+        this.#recordLineage(nodeId, wsName, { rel_path: relPath, origin: 'push', transfer_id: transferId, file_sha256: oc.file_sha256, at: new Date().toISOString() });
+      }
+    }
+    return env;
+  }
+
+  /** fetch：节点工作区文件 → hub 收件箱 <home>/inbox/<transfer_id>/。sink 收块 → 集齐自动 finalize → 差量重发（≤2 次） */
+  async #transferFetch(nodeId: string, args: Record<string, unknown>): Promise<ResultEnvelope> {
+    const pathArg = String(args['path'] ?? '');
+    if (!/^workspace:[A-Za-z0-9_-]+\//.test(pathArg)) return this.#transferFail(`path 须形如 workspace:repo/dist/a.bin（源节点的工作区引用），实得 ${pathArg}`);
+    const baseName = pathArg.split(/[\\/]/).pop() || 'file.bin';
+    const transferId = `t-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const inboxDir = path.join(this.opts.home, 'inbox', transferId);
+    fs.mkdirSync(inboxDir, { recursive: true });
+    const finalPath = path.join(inboxDir, baseName);
+
+    type FetchState = {
+      manifest?: ChunkedFile;
+      assembler?: Assembler;
+      queue: Array<{ seq: number; data: Buffer }>;
+      framesSeen: number;
+      rejected: Array<{ index: number; reason: string }>;
+      completing: boolean;
+      resolve: (r: { outcome?: TransferOutcome; failed?: string }) => void;
+    };
+    const st: FetchState = { queue: [], framesSeen: 0, rejected: [], completing: false, resolve: () => {} };
+    let completion = new Promise<{ outcome?: TransferOutcome; failed?: string }>((res) => { st.resolve = res; });
+
+    const tryComplete = (): void => {
+      if (st.completing || !st.manifest || !st.assembler) return;
+      if (st.assembler.receivedCount < st.manifest.chunks.length) {
+        if (st.framesSeen >= st.manifest.chunks.length) {
+          st.completing = true;
+          const missing = st.assembler.missing();
+          void st.assembler.close();
+          st.resolve({ failed: `块未集齐（缺 ${missing.length} 块）——可差量重发` });
+        }
+        return;
+      }
+      st.completing = true;
+      const assembler = st.assembler;
+      void assembler.finalize()
+        .then((fin) => st.resolve({ outcome: { transfer_id: transferId, file_sha256: fin.fileSha256, bytes: fin.bytes, chunks: st.manifest!.chunks.length, inbox_path: fin.finalPath } }))
+        .catch((e) => st.resolve({ failed: `finalize 失败：${String((e as Error).message)}` }));
+    };
+
+    const makeSink = (): BinSink => ({
+      onChunk: (seq, payload) => {
+        if (st.completing) return;
+        st.framesSeen += 1;
+        if (!st.manifest || !st.assembler) {
+          st.queue.push({ seq, data: payload }); // manifest 信封未消费完（微任务时序），先排队
+          return;
+        }
+        void (async () => {
+          const meta = st.manifest!.chunks[seq];
+          if (!meta) { st.rejected.push({ index: seq, reason: '块索引越界' }); return; }
+          const r = await st.assembler!.writeChunk(meta, payload);
+          if (!r.written && r.reason !== 'already-received') st.rejected.push({ index: seq, reason: r.reason ?? '未知拒收' });
+          tryComplete();
+        })();
+      },
+      onAbort: (reason) => {
+        if (st.completing) return;
+        st.completing = true;
+        void st.assembler?.abort();
+        st.resolve({ failed: `节点中止流送：${reason}` });
+      },
+    });
+
+    const deadline = 300000;
+    const recvParams = { transfer_id: transferId, path: pathArg };
+    let env: ResultEnvelope;
+    let sinkCallId = '';
+    {
+      const { promise, callId } = this.nodeServer.dispatchEx(nodeId, 'transfer_send', recvParams, deadline, makeSink());
+      sinkCallId = callId;
+      if (!callId) return await promise;
+      env = await promise;
+    }
+    if (env.status !== 'ok') {
+      this.nodeServer.binSinks.delete(sinkCallId);
+      return env;
+    }
+    let manifest: ChunkedFile;
+    try {
+      manifest = (JSON.parse(env.result?.stdout ?? '{}') as { transfer_id: string; manifest: ChunkedFile }).manifest;
+      if (!manifest?.chunks?.length && manifest?.size !== 0) throw new Error('manifest 缺失');
+    } catch {
+      this.nodeServer.binSinks.delete(sinkCallId);
+      return this.#transferFail('节点 manifest 信封解析失败', 'crash');
+    }
+    st.manifest = manifest;
+    st.assembler = new Assembler({ finalPath, manifest });
+    try {
+      await st.assembler.open();
+    } catch (e) {
+      this.nodeServer.binSinks.delete(sinkCallId);
+      return this.#transferFail(`收件箱组装器打开失败：${String((e as Error).message)}`, 'crash');
+    }
+    // 排队帧补投（onChunk 语义为 async，此处直接同步写块）
+    for (const { seq, data } of st.queue.splice(0)) {
+      st.framesSeen += 1;
+      const meta = manifest.chunks[seq];
+      if (!meta) { st.rejected.push({ index: seq, reason: '块索引越界' }); continue; }
+      const r = await st.assembler.writeChunk(meta, data);
+      if (!r.written && r.reason !== 'already-received') st.rejected.push({ index: seq, reason: r.reason ?? '未知拒收' });
+    }
+    tryComplete();
+
+    let result = await completion;
+    // 差量重发（节点按 only 重读重流；新 Assembler 经 state 文件续传，幂等）
+    for (let attempts = 0; result.failed && result.failed.includes('块未集齐') && attempts < 2; attempts++) {
+      this.nodeServer.binSinks.delete(sinkCallId);
+      const missing = st.assembler!.missing();
+      this.log(`transfer ${transferId} 差量重发（第 ${attempts + 1} 次，缺 ${missing.length} 块）`);
+      st.completing = false;
+      st.framesSeen = 0;
+      st.assembler = new Assembler({ finalPath, manifest });
+      await st.assembler.open();
+      completion = new Promise<{ outcome?: TransferOutcome; failed?: string }>((res) => { st.resolve = res; });
+      const { promise, callId } = this.nodeServer.dispatchEx(nodeId, 'transfer_send', { ...recvParams, only: missing }, deadline, makeSink());
+      sinkCallId = callId;
+      if (!callId) return await promise;
+      await promise; // manifest 信封（文件未变则清单一致；变了由块哈希校验兜底拒收）
+      tryComplete();
+      result = await completion;
+    }
+    this.nodeServer.binSinks.delete(sinkCallId);
+    if (result.failed) {
+      void st.assembler.abort();
+      return { status: 'failed', node_id: nodeId, call_id: '', ts_hub: Date.now(),
+        result: { exit: 1, stdout: JSON.stringify({ transfer_id: transferId, rejected: st.rejected }), stderr: '', truncated: false },
+        error: { class: 'crash', retryable: true, message: `fetch ${transferId} 未完成：${result.failed}` } };
+    }
+    // 血统：fetch 记录源工作区（revision 沿源现值不递增——收件箱不是工作区副本；superseded 签发属 P2-2）
+    const wsName = /^workspace:([A-Za-z0-9_-]+)\//.exec(pathArg)?.[1];
+    if (wsName) {
+      this.#recordLineage(nodeId, wsName, { rel_path: pathArg.split('/').slice(1).join('/'), origin: 'fetch', transfer_id: transferId, file_sha256: result.outcome!.file_sha256, at: new Date().toISOString(), source_node: nodeId }, false);
+    }
+    return { status: 'ok', node_id: nodeId, call_id: '', ts_hub: Date.now(),
+      result: { exit: 0, stdout: JSON.stringify(result.outcome), stderr: '', truncated: false } };
   }
 
   /** nodes()：节点/工作区/健康/权限摘要 + 未消费 job 计数（01 §4.1） */
@@ -291,6 +532,16 @@ export class Hub {
           this.jobs.registerBackground(found.handle.node_id, env.job.job_id, String(params['cmd'] ?? ''));
         }
         return env;
+      }
+
+      case 'transfer_push':
+      case 'transfer_fetch': {
+        const nodeName = String(args['node'] ?? '');
+        const found = this.#findNode(nodeName);
+        if ('offlineMsg' in found) return this.#offlineEnvelope(found.offlineMsg, '');
+        const blocked = this.#featureGate(found.handle.node_id, 'transfer');
+        if (blocked) return blocked;
+        return name === 'transfer_push' ? await this.#transferPush(found.handle.node_id, args) : await this.#transferFetch(found.handle.node_id, args);
       }
 
       case 'job_status': {

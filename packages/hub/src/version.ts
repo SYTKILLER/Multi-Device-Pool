@@ -10,7 +10,7 @@ export type Capability = 'exec' | 'fs' | 'transfer';
 export const FEATURE_MIN: Record<Capability, string> = {
   exec: '0.1.0',
   fs: '0.0.1',
-  transfer: '99.0.0', // P2 未实现，恒不可用
+  transfer: '0.3.0', // P2-1 接线（81ca213 库层 + 混合帧）；旧节点升级后自动开闸
 };
 
 export const compareVersions = (a: string, b: string): number => {
