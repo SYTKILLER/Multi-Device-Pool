@@ -25,9 +25,15 @@ const judge = (name, ok, detail) => {
 }
 
 // ② pwsh7 + 前缀（pwsh7 默认管道也 GBK → 前缀必须保留）
+// pwsh（PS7）未装时 SKIP：本通路在 A 机五链已覆盖（B 机 2026-11-21 实测无 pwsh——设备重置后未装回），PS5.1 通路 ③ 独立可测
 {
-  const buf = execFileSync('pwsh', ['-NoProfile', '-Command', `[Console]::OutputEncoding=[Text.Encoding]::UTF8; Write-Output "${EXPECT}"`], { encoding: 'buffer', timeout: 30000, windowsHide: true });
-  judge('② pwsh7 + OutputEncoding 前缀 → UTF-8', buf.toString('utf8').includes(EXPECT), JSON.stringify(buf.toString('utf8').trim().slice(0, 60)));
+  const has = spawnSync('where', ['pwsh'], { timeout: 15000, windowsHide: true }).status === 0;
+  if (!has) {
+    console.log('SKIP  ② pwsh7 + OutputEncoding 前缀 → UTF-8（本机无 pwsh，A 机已覆盖）');
+  } else {
+    const buf = execFileSync('pwsh', ['-NoProfile', '-Command', `[Console]::OutputEncoding=[Text.Encoding]::UTF8; Write-Output "${EXPECT}"`], { encoding: 'buffer', timeout: 30000, windowsHide: true });
+    judge('② pwsh7 + OutputEncoding 前缀 → UTF-8', buf.toString('utf8').includes(EXPECT), JSON.stringify(buf.toString('utf8').trim().slice(0, 60)));
+  }
 }
 
 // ③ PS5.1 前缀 + 原生命令写 stderr（双路验证）

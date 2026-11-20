@@ -1,18 +1,16 @@
 /**
- * mdp CLI（01 §1.2：hub/node 生命周期）。P1-6 范围：stop（node/hub）+ status。
+ * mdp CLI（01 §1.2：hub/node 生命周期）。P1-6 范围：stop（node/hub）+ status；P2-4 增 file（大载荷旁路）。
  *   mdp node stop [--home <dir>]   读 <home>/node.pid，按进程树杀（见 kill.ts 的 §6 教训）
  *   mdp hub  stop [--home <dir>]   读 <home>/hub-info.json 的 pid，同构
  *   mdp node status [--home <dir>] / mdp hub status
+ *   mdp file  <stash|push|pull> …  大载荷旁路（sha256 校验输出，见 file.ts 头注）
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { killTree, pidAlive } from './kill.js';
-
-const homeOf = (): string => {
-  const i = process.argv.indexOf('--home');
-  return i >= 0 ? (process.argv[i + 1] ?? os.homedir() + '/.mdp') : process.env['MDP_HOME'] ?? path.join(os.homedir(), '.mdp');
-};
+import { homeOf } from './home.js';
+import { runFile } from './file.js';
 
 const readPid = (file: string, label: string): number | undefined => {
   try {
@@ -63,11 +61,12 @@ const doStatus = async (kind: 'node' | 'hub'): Promise<void> => {
 };
 
 const [, , sub, kind] = process.argv;
-if (sub === 'node' && kind === 'stop') await doStop('node');
+if (sub === 'file') await runFile(process.argv.slice(3));
+else if (sub === 'node' && kind === 'stop') await doStop('node');
 else if (sub === 'hub' && kind === 'stop') await doStop('hub');
 else if (sub === 'node' && kind === 'status') await doStatus('node');
 else if (sub === 'hub' && kind === 'status') await doStatus('hub');
 else {
-  console.error('用法：mdp <node|hub> <stop|status> [--home <dir>]');
+  console.error('用法：mdp <node|hub> <stop|status> [--home <dir>] | mdp file <stash|push|pull> …');
   process.exit(2);
 }

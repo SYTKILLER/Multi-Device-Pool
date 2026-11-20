@@ -12,7 +12,7 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
-    "verify": "node verification/v2-encoding.mjs && node verification/v2b-encoding.mjs && node verification/v3-mdns/dgram-iface.mjs && node verification/v4-journal/main.mjs && node verification/v5-hub/test-v5.mjs && node verification/v6-transfer/test-v6.mjs",
+    "verify": "node verification/v2-encoding.mjs && node verification/v2b-encoding.mjs && node verification/v3-mdns/dgram-iface.mjs && node verification/v4-journal/main.mjs && node verification/v5-hub/test-v5.mjs && node verification/v6-transfer/test-v6.mjs && node verification/v7-cli-file/test-v7.mjs",
     "hub": "node packages/hub/dist/index.js",
     "node": "node packages/node/dist/index.js",
     "mdp": "node apps/cli/dist/index.js",
