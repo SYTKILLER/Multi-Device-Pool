@@ -11,7 +11,12 @@ const fmtLeft = (createdAt: string, ttlMs: number): string => {
   return `剩余 ${m}分${s.toString().padStart(2, '0')}秒`;
 };
 
-function NodeCard({ n }: { n: NodeSnapshot }) {
+function NodeCard({ n, api, onChanged }: { n: NodeSnapshot; api: MdpApi; onChanged: () => void }) {
+  const [err, setErr] = useState('');
+  const clear = async (ws: string) => {
+    setErr('');
+    try { await api.unsupersede(n.node_id, ws); onChanged(); } catch (e) { setErr(String((e as Error).message)); }
+  };
   return (
     <div className="card">
       <div className="row">
@@ -25,7 +30,16 @@ function NodeCard({ n }: { n: NodeSnapshot }) {
         {typeof n.rtt_ms === 'number' ? ` · RTT ${n.rtt_ms}ms` : ''}
       </div>
       <div className="row dim">
-        工作区：{(n.workspaces ?? []).map((w) => `${w.name}${w.superseded ? '（已移交）' : ''}`).join('、') || '—'}
+        工作区：{(n.workspaces ?? []).map((w) => (
+          <span key={w.name}>
+            {w.name}
+            {w.superseded && (
+              <>（已移交，写入前须确认）{' '}
+              <button className="mini" onClick={() => void clear(w.name)} title="确认此副本仍是权威后清除血统让位标记">清标记</button></>
+            )}
+          </span>
+        )) || '—'}
+        {err && <span className="warn">⚠ {err}</span>}
       </div>
     </div>
   );
@@ -168,7 +182,7 @@ export default function App() {
         <span className="spacer" />
         <button className="link" onClick={() => { localStorage.removeItem('mdp-token'); setToken(''); }}>换令牌</button>
       </div>
-      {tab === 'nodes' && nodes.map((n) => <NodeCard key={n.node_id} n={n} />)}
+      {tab === 'nodes' && nodes.map((n) => <NodeCard key={n.node_id} n={n} api={api} onChanged={() => void refresh()} />)}
       {tab === 'approvals' && (pending.length === 0 ? <p className="dim">暂无待审批项。</p> : pending.map((j) => <ApprovalCard key={j.job_id} job={j} api={api} onChanged={() => void refresh()} />))}
       {tab === 'jobs' && (
         <div className="card">

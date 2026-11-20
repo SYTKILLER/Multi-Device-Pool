@@ -27,3 +27,5 @@ button[data-active="true"] { background: #3a7bd5; }
 input, select { background: #121417; color: #e6e6e6; border: 1px solid #2a2e36; border-radius: 6px; padding: 6px 8px; font-size: 13px; }
 input { min-width: 260px; }
 code { color: #9cdcfe; }
+.mini { font-size: 11px; padding: 1px 8px; margin-left: 4px; background: #2a2e36; border: 1px solid #3a7bd5; border-radius: 8px; color: #9cdcfe; cursor: pointer; }
+.mini:hover { background: #3a7bd5; color: #fff; }

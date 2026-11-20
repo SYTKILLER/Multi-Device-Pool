@@ -99,6 +99,20 @@ export const startMcpHttp = (hub: Hub, opts: McpHttpOptions): http.Server => {
       }
     }
 
+    // 血统清标记（P2-2；GUI 手动清 superseded 的后端，01 §5.2 配套逃生门）
+    const us = /^\/nodes\/([\w-]+)\/unsupersede$/.exec(req.url ?? '');
+    if (us && req.method === 'POST') {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      let body: { workspace?: string };
+      try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') as typeof body; } catch {
+        return json(res, 400, { error: 'body 不是合法 JSON' });
+      }
+      if (!body.workspace) return json(res, 400, { error: '需要 workspace（工作区名）' });
+      const env = await hub.toolCall('workspace_unsupersede', { node: us[1], workspace: body.workspace });
+      return json(res, env.status === 'ok' ? 200 : 409, env);
+    }
+
     json(res, 404, { error: `未知端点 ${req.method} ${req.url}` });
   });
   server.listen(opts.port);

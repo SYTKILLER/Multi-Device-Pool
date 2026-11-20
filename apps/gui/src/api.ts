@@ -61,4 +61,7 @@ export class MdpApi {
     this.call<{ ok: boolean; state?: string }>(`/jobs/${jobId}/approve`, { method: 'POST', body: JSON.stringify({ remember, prefix }) });
   deny = (jobId: string) =>
     this.call<{ ok: boolean; state?: string }>(`/jobs/${jobId}/deny`, { method: 'POST', body: JSON.stringify({}) });
+  /** P2-2：手动清除节点工作区的 superseded（血统让位）标记（01 §5.2 逃生门） */
+  unsupersede = (nodeId: string, workspace: string) =>
+    this.call<{ ok: boolean }>(`/nodes/${nodeId}/unsupersede`, { method: 'POST', body: JSON.stringify({ workspace }) });
 }

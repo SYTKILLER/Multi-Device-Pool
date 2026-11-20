@@ -550,6 +550,9 @@ export class Hub {
     return { nodes: [...online, ...offline], hub_version: '0.1.0' };
   }
 
+  /** 公开工具调用（REST 层复用：如 P2-2 GUI 清标记 POST /nodes/:id/unsupersede） */
+  toolCall = async (name: string, args: Record<string, unknown>): Promise<ResultEnvelope> => this.#toolCall(name, args);
+
   async #toolCall(name: string, args: Record<string, unknown>): Promise<ResultEnvelope> {
     switch (name) {
       case 'nodes':
