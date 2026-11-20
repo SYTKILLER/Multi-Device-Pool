@@ -264,6 +264,9 @@ export class Hub {
 
   /** push：hub 宿主文件 → 节点工作区。全量流块 → 差量重流（≤3 次）→ 血统 */
   async #transferPush(nodeId: string, args: Record<string, unknown>): Promise<ResultEnvelope> {
+    if (args['migrate'] === true) {
+      return this.#transferFail('transfer_push 不支持 migrate：源是 hub 宿主文件，无源副本可让位；节点间搬迁请 transfer_fetch(migrate:true) 搬出源节点 + transfer_push 落目标节点组合完成');
+    }
     const src = String(args['src'] ?? '');
     const pathArg = String(args['path'] ?? '');
     if (!src || !pathArg) return this.#transferFail('transfer_push 需要 src（hub 宿主绝对路径）与 path（目标 workspace:<name>/<相对路径>）');
@@ -453,13 +456,48 @@ export class Hub {
         result: { exit: 1, stdout: JSON.stringify({ transfer_id: transferId, rejected: st.rejected }), stderr: '', truncated: false },
         error: { class: 'crash', retryable: true, message: `fetch ${transferId} 未完成：${result.failed}` } };
     }
-    // 血统：fetch 记录源工作区（revision 沿源现值不递增——收件箱不是工作区副本；superseded 签发属 P2-2）
+    // 血统：fetch 记录源工作区（revision 沿源现值不递增——收件箱不是工作区副本）
     const wsName = /^workspace:([A-Za-z0-9_-]+)\//.exec(pathArg)?.[1];
     if (wsName) {
       this.#recordLineage(nodeId, wsName, { rel_path: pathArg.split('/').slice(1).join('/'), origin: 'fetch', transfer_id: transferId, file_sha256: result.outcome!.file_sha256, at: new Date().toISOString(), source_node: nodeId }, false);
+      // P2-2 superseded 签发：migrate=true = 调用方声明此为搬迁（副本让位语义，01 §5.2）。
+      // 单文件 fetch 默认只是复制（读类）；让位是节点级显式决策，故挂在参数上而非 fetch 本身。
+      if (args['migrate'] === true) {
+        this.#issueSupersede(nodeId, wsName, true, transferId);
+      }
     }
     return { status: 'ok', node_id: nodeId, call_id: '', ts_hub: Date.now(),
       result: { exit: 0, stdout: JSON.stringify(result.outcome), stderr: '', truncated: false } };
+  }
+
+  /** superseded 标记签发/清除：下发 lineage 指令（节点重报 manifest）+ hub db 血统记录同步（P2-2） */
+  #issueSupersede(nodeId: string, wsName: string, superseded: boolean, transferId: string): void {
+    const ws = this.opts.db.nodes[nodeId]?.manifest.workspaces.find((w) => w.name === wsName);
+    if (!ws) return;
+    const conn = this.nodeServer.nodes.get(nodeId);
+    conn?.send({ t: 'lineage', updates: [{ workspace_id: ws.workspace_id, revision: ws.revision ?? 0, superseded }] });
+    const last = this.opts.db.lineage?.[ws.workspace_id];
+    if (last) {
+      last.superseded = superseded;
+      last.at = new Date().toISOString();
+      last.transfer_id = transferId;
+      saveHubDb(this.opts.home, this.opts.db);
+    }
+    this.log(`血统：ws=${ws.workspace_id.slice(0, 8)}… superseded=${superseded}（${transferId}）`);
+  }
+
+  /** 清标记（P2-2：GUI/人工确认副本仍权威后手动恢复） */
+  async #workspaceUnsupersede(nodeId: string, args: Record<string, unknown>): Promise<ResultEnvelope> {
+    const wsName = String(args['workspace'] ?? '');
+    if (!wsName) return this.#transferFail('workspace_unsupersede 需要 workspace（工作区名）');
+    const ws = this.opts.db.nodes[nodeId]?.manifest.workspaces.find((w) => w.name === wsName);
+    if (!ws?.superseded) {
+      return { status: 'failed', node_id: nodeId, call_id: '', ts_hub: Date.now(),
+        error: { class: 'permission', retryable: false, message: `节点 ${nodeId} 工作区 ${wsName} 未标记 superseded（幂等无操作）` } };
+    }
+    this.#issueSupersede(nodeId, wsName, false, `unsupersede-${Date.now().toString(36)}`);
+    return { status: 'ok', node_id: nodeId, call_id: '', ts_hub: Date.now(),
+      result: { exit: 0, stdout: JSON.stringify({ workspace: wsName, superseded: false }), stderr: '', truncated: false } };
   }
 
   /** nodes()：节点/工作区/健康/权限摘要 + 未消费 job 计数（01 §4.1） */
@@ -551,6 +589,14 @@ export class Hub {
         const blocked = this.#featureGate(found.handle.node_id, 'transfer');
         if (blocked) return blocked;
         return name === 'transfer_push' ? await this.#transferPush(found.handle.node_id, args) : await this.#transferFetch(found.handle.node_id, args);
+      }
+
+      case 'workspace_unsupersede': {
+        // P2-2：人工/GUI 确认副本仍权威后手动清让位标记（01 §5.2：附强警告但允许写入的配套逃生门）
+        const nodeName = String(args['node'] ?? '');
+        const found = this.#findNode(nodeName);
+        if ('offlineMsg' in found) return this.#offlineEnvelope(found.offlineMsg, '');
+        return await this.#workspaceUnsupersede(found.handle.node_id, args);
       }
 
       case 'job_status': {

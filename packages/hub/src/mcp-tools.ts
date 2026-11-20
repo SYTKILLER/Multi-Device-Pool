@@ -119,14 +119,28 @@ export const TOOL_DEFS: ToolDef[] = [
   },
   {
     name: 'transfer_fetch',
-    description: '（P2）把目标节点工作区里的文件分块取回 hub 宿主机收件箱（<hub-home>/inbox/<transfer_id>/文件名），绕过对话转录；返回 TransferOutcome 含 inbox_path 与 file_sha256。path 为源节点工作区引用，如 workspace:repo/dist/a.bin。上限 256 MiB；节点 agent ≥0.3.0 才可用。',
+    description: '（P2）把目标节点工作区里的文件分块取回 hub 宿主机收件箱（<hub-home>/inbox/<transfer_id>/文件名），绕过对话转录；返回 TransferOutcome 含 inbox_path 与 file_sha256。path 为源节点工作区引用，如 workspace:repo/dist/a.bin。上限 256 MiB；节点 agent ≥0.3.0 才可用。migrate=true = 搬迁声明：取回成功后源节点该工作区副本标记 superseded（血统让位，01 §5.2；节点间搬迁 = fetch(migrate)+push 组合）；默认 false（纯复制，源不动）。',
     inputSchema: {
       type: 'object',
       properties: {
         ...nodeRef,
         path: { type: 'string', description: '源引用，如 workspace:repo/dist/a.bin' },
+        migrate: { type: 'boolean', description: '搬迁声明：成功后源副本标 superseded（默认 false）' },
       },
       required: ['node', 'path'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'workspace_unsupersede',
+    description: '（P2-2）手动清除节点工作区副本的 superseded（血统让位）标记——在人工/GUI 确认该副本仍是权威后使用；节点将重报 manifest。对未标记的工作区幂等报错。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...nodeRef,
+        workspace: { type: 'string', description: '工作区名，如 repo' },
+      },
+      required: ['node', 'workspace'],
       additionalProperties: false,
     },
   },

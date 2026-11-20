@@ -255,10 +255,28 @@ export class NodeAgent {
   }
 
   /** 执行路径唯一强制点（01 §1.2）：overlay 三检 → journal → 执行 → 结果信封 */
+  /** superseded 工作区写类操作的强警告文本（解析 workspace: 引用；绝对路径场景不告警——引用层为主用例） */
+  #supersededWarnFor(kind: string, params: Record<string, unknown>): string | undefined {
+    if (kind !== 'exec' && kind !== 'job_submit' && kind !== 'fs' && kind !== 'transfer_receive') return undefined;
+    if (kind === 'fs' && String(params['op'] ?? '') !== 'write') return undefined; // 读类不告警
+    const ref = kind === 'exec' || kind === 'job_submit'
+      ? String(params['cwd'] ?? '')
+      : kind === 'transfer_receive'
+        ? `workspace:${String(params['workspace'] ?? '')}`
+        : String(params['path'] ?? '');
+    const name = /^workspace:([A-Za-z0-9_-]+)/.exec(ref)?.[1];
+    const ws = name ? this.manifest.workspaces.find((w) => w.name === name) : undefined;
+    if (!ws?.superseded) return undefined;
+    return `【强警告】工作区 ${ws.name} 已标记 superseded（血统让位）——本节点副本可能已过期，向其写入会造成分支。确认仍权威请经 workspace_unsupersede 清除标记。`;
+  }
+
   async #dispatch(msg: Record<string, unknown>, jobId: string | undefined, approved = false): Promise<void> {
     const callId = msg['call_id'] as string;
     const kind = msg['kind'] as string;
     const params = (msg['params'] ?? {}) as Record<string, unknown>;
+
+    // P2-2 血统警告：写类操作目标工作区已让位（superseded）→ 信封附强警告但放行（01 §5.2：避免死锁，GUI 可清标记）
+    const supWarn = this.#supersededWarnFor(kind, params);
 
     const denyEnvelope = (cls: 'permission' | 'busy', message: string): ResultEnvelope => ({
       status: 'denied', node_id: this.manifest.node_id, call_id: callId, ts_hub: 0,
@@ -292,11 +310,13 @@ export class NodeAgent {
           // journal 不覆盖后台 job 的 started 界（job 有独立状态机与留存，01 §6）
           const newJobId = jobId ?? callId;
           const job = this.jobs.submit(newJobId, spec, spec.shell);
-          return this.#send({ t: 'call_result', call_id: callId, job_id: jobId, envelope: {
+          const jobEnv: ResultEnvelope = {
             status: 'ok', node_id: this.manifest.node_id, call_id: callId, ts_hub: 0,
             result: { exit: null, stdout: '', stderr: '', truncated: false, output_ref: `job:${newJobId}#0` },
             job: { job_id: newJobId, state: job.state as 'running' },
-          } });
+          };
+          if (supWarn) jobEnv.warnings = [supWarn];
+          return this.#send({ t: 'call_result', call_id: callId, job_id: jobId, envelope: jobEnv });
         }
         // 前台 exec：received → started → finished（01 §4.3 journal）
         this.journal.mark(callId, 'received');
@@ -314,6 +334,7 @@ export class NodeAgent {
             ? { status: 'failed', node_id: this.manifest.node_id, call_id: callId, ts_hub: 0,
                 error: { class: 'crash', retryable: false, message: `spawn 失败：${outcome.crash}` } }
             : { status: 'ok', node_id: this.manifest.node_id, call_id: callId, ts_hub: 0, result: baseResult };
+        if (supWarn) env.warnings = [supWarn];
         return this.#send({ t: 'call_result', call_id: callId, job_id: jobId, envelope: env });
       }
 
@@ -341,10 +362,12 @@ export class NodeAgent {
           this.journal.mark(callId, 'finished', { exit: 0 });
           this.audit.append({ call_id: callId, kind: 'fs', cmd: String(params['path'] ?? ''), op: 'write', exit: 0, result_hash: resultHash(String(params['content'] ?? ''), '', 0) });
         }
-        return this.#send({ t: 'call_result', call_id: callId, job_id: jobId, envelope: {
+        const fsOkEnv: ResultEnvelope = {
           status: 'ok', node_id: this.manifest.node_id, call_id: callId, ts_hub: 0,
           result: { exit: 0, stdout: JSON.stringify(outcome.data), stderr: '', truncated: false },
-        } });
+        };
+        if (supWarn) fsOkEnv.warnings = [supWarn];
+        return this.#send({ t: 'call_result', call_id: callId, job_id: jobId, envelope: fsOkEnv });
       }
 
       if (kind === 'transfer_receive') {
@@ -374,10 +397,12 @@ export class NodeAgent {
         }
         this.journal.mark(callId, 'finished', { exit: 0 });
         this.audit.append({ call_id: callId, kind: 'transfer', cmd: `receive ${pathRef}`, op: 'receive', exit: 0, result_hash: resultHash(outcome.file_sha256, '', 0) });
-        return this.#send({ t: 'call_result', call_id: callId, job_id: jobId, envelope: {
+        const trOkEnv: ResultEnvelope = {
           status: 'ok', node_id: this.manifest.node_id, call_id: callId, ts_hub: 0,
           result: { exit: 0, stdout: JSON.stringify(outcome), stderr: '', truncated: false },
-        } });
+        };
+        if (supWarn) trOkEnv.warnings = [supWarn];
+        return this.#send({ t: 'call_result', call_id: callId, job_id: jobId, envelope: trOkEnv });
       }
 
       if (kind === 'transfer_send') {

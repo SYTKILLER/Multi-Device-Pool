@@ -126,8 +126,8 @@ ok('T1 initialize：serverInfo=mdp', initA.serverInfo?.name === 'mdp', JSON.stri
 
 // ---------- 工具面 ----------
 const tools = (await callRpc('tools/list', {})).tools;
-ok('T2 静态基线 9 工具（01 §4.1 七件套 + P2 transfer_push/transfer_fetch）',
-  ['nodes', 'exec', 'fs', 'job_submit', 'job_status', 'job_output', 'job_cancel', 'transfer_push', 'transfer_fetch'].every((n) => tools.some((t) => t.name === n)) && tools.length === 9,
+ok('T2 静态基线 10 工具（01 §4.1 七件套 + P2 transfer×2 + P2-2 unsupersede）',
+  ['nodes', 'exec', 'fs', 'job_submit', 'job_status', 'job_output', 'job_cancel', 'transfer_push', 'transfer_fetch', 'workspace_unsupersede'].every((n) => tools.some((t) => t.name === n)) && tools.length === 10,
   `tools=${tools.map((t) => t.name).join(',')}`);
 
 const nodes = await callTool('nodes', {});
