@@ -19,6 +19,17 @@ const ok = (name, cond, detail = '') => {
   else { failed++; console.log(`FAIL  ${name}\n      -> ${detail}`); }
 };
 
+// uncaught（如 fetch ECONNRESET——hub/node 侧崩溃）也须 dump 双方日志定位现场，2026-11-21 B 机 T3a 稳定复现用
+process.on('uncaughtException', (e) => {
+  console.error(`\n[UNCAUGHT] ${e.stack ?? e}`);
+  console.log('--- hub 日志尾部 ---');
+  console.log(hubLog.slice(-25).join('\n'));
+  console.log('--- node 日志尾部 ---');
+  console.log(nodeLog.slice(-25).join('\n'));
+  try { nodeProc.kill(); hubProc.kill(); } catch { /* 已死 */ }
+  process.exit(2);
+});
+
 // ---------- 环境准备 ----------
 const work = fs.mkdtempSync(path.join(os.tmpdir(), 'mdp-v6-'));
 const hubHome = path.join(work, 'hub');
@@ -58,6 +69,7 @@ const hubProc = spawn(process.execPath, [hubBin, '--home', hubHome, '--port', St
 });
 const hubLog = [];
 hubProc.stdout.on('data', (c) => hubLog.push(...c.toString().split('\n').filter(Boolean)));
+hubProc.stderr.on('data', (c) => hubLog.push('[hub:stderr] ' + c.toString().trim())); // 崩溃堆栈捕获（间歇崩定位，2026-11-21）
 
 let info;
 for (let i = 0; i < 50; i++) {

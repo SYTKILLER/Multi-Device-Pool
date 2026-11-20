@@ -24,6 +24,7 @@ interface RxEntry {
   rejected: Array<{ index: number; reason: string }>;
   responded: boolean;
   startedMarked: boolean;
+  draining: boolean; // #drain 单飞锁（防双 drain 并发撞 close——2026-11-21 竞速修复）
   resolve: (outcome: TransferOutcome & { failed?: string }) => void;
 }
 
@@ -39,7 +40,7 @@ export class TransferManager {
       return { transfer_id: params.transfer_id, file_sha256: '', bytes: 0, chunks: 0, failed: 'manifest 非法' };
     }
     const entry: RxEntry = {
-      params, abs, queue: [], ready: false, framesSeen: 0, queuedBytes: 0, rejected: [], responded: false, startedMarked: false,
+      params, abs, queue: [], ready: false, framesSeen: 0, queuedBytes: 0, rejected: [], responded: false, startedMarked: false, draining: false,
       resolve: () => {},
     };
     const done = new Promise<TransferOutcome & { failed?: string }>((resolve) => { entry.resolve = resolve; });
@@ -85,46 +86,63 @@ export class TransferManager {
   }
 
   async #drain(stream: string, entry: RxEntry, onFirstChunk: () => void): Promise<void> {
-    if (!entry.ready) return;
-    const chunks = entry.params.manifest.chunks;
-    while (entry.queue.length > 0) {
-      const { seq, data } = entry.queue.shift()!;
-      entry.queuedBytes -= data.length;
-      entry.framesSeen += 1;
-      if (!entry.startedMarked) { entry.startedMarked = true; onFirstChunk(); }
-      const meta = chunks[seq];
-      if (!meta) {
-        entry.rejected.push({ index: seq, reason: '块索引越界' });
-      } else {
-        const r = await entry.assembler!.writeChunk(meta, data);
-        if (!r.written && r.reason !== 'already-received') entry.rejected.push({ index: seq, reason: r.reason ?? '未知拒收' });
-      }
-      // 集齐即 finalize（不待帧尾——最后一块写成功即完整）
-      if (entry.assembler!.receivedCount === chunks.length) {
-        entry.responded = true;
-        try {
-          const fin = await entry.assembler!.finalize();
-          this.#active.delete(stream);
-          entry.resolve({ transfer_id: entry.params.transfer_id, file_sha256: fin.fileSha256, bytes: fin.bytes, chunks: chunks.length });
-        } catch (e) {
-          // 全量校验失败=数据级损坏：保 staging 供排查，按缺块差量报（重流无法修复哈希不符，如实失败）
-          this.#active.delete(stream);
-          entry.resolve({ transfer_id: entry.params.transfer_id, file_sha256: entry.params.manifest.fileSha256, bytes: 0, chunks: chunks.length, failed: `finalize 失败：${String((e as Error).message)}`, missing: entry.assembler!.missing() });
+    // 单飞锁：feed 在 drain await writeChunk 挂起期间再到达时只入队，由在跑的循环消费；
+    // 否则双 drain 并发——先完成者 finalize/pauseAll 关流，后到者 writeChunk 撞 close 即
+    // unhandled rejection 杀 node（hub 侧同款竞速 2026-11-21 V6 间歇崩抓到并修复）
+    if (entry.draining || !entry.ready) return;
+    entry.draining = true;
+    try {
+      const chunks = entry.params.manifest.chunks;
+      while (entry.queue.length > 0 && !entry.responded) {
+        const { seq, data } = entry.queue.shift()!;
+        entry.queuedBytes -= data.length;
+        entry.framesSeen += 1;
+        if (!entry.startedMarked) { entry.startedMarked = true; onFirstChunk(); }
+        const meta = chunks[seq];
+        if (!meta) {
+          entry.rejected.push({ index: seq, reason: '块索引越界' });
+        } else {
+          try {
+            const r = await entry.assembler!.writeChunk(meta, data);
+            if (!r.written && r.reason !== 'already-received') entry.rejected.push({ index: seq, reason: r.reason ?? '未知拒收' });
+          } catch (e) {
+            // 迟滞块撞上 finalize/pauseAll/abort 关闭：丢弃入 rejected（错误信封原则——传输层竞速不是进程级故障）
+            entry.rejected.push({ index: seq, reason: `writeChunk 异常丢弃：${String((e as Error).message)}` });
+            continue;
+          }
         }
-        return;
+        // 集齐即 finalize（不待帧尾——最后一块写成功即完整）
+        if (entry.assembler!.receivedCount === chunks.length) {
+          entry.responded = true;
+          try {
+            const fin = await entry.assembler!.finalize();
+            this.#active.delete(stream);
+            entry.resolve({ transfer_id: entry.params.transfer_id, file_sha256: fin.fileSha256, bytes: fin.bytes, chunks: chunks.length });
+          } catch (e) {
+            // 全量校验失败=数据级损坏：保 staging 供排查，按缺块差量报（重流无法修复哈希不符，如实失败）
+            this.#active.delete(stream);
+            entry.resolve({ transfer_id: entry.params.transfer_id, file_sha256: entry.params.manifest.fileSha256, bytes: 0, chunks: chunks.length, failed: `finalize 失败：${String((e as Error).message)}`, missing: entry.assembler!.missing() });
+          }
+          return;
+        }
       }
-    }
-    // 帧到齐但未集齐 → 差量报告（零块清单在 receive() 已短路，此分支只对有块传输生效）
-    if (chunks.length > 0 && entry.framesSeen >= chunks.length && !entry.responded) {
-      entry.responded = true;
-      const missing = entry.assembler!.missing();
-      await entry.assembler!.close(); // 保 staging 续传
-      this.#active.delete(stream);
-      entry.resolve({
-        transfer_id: entry.params.transfer_id, file_sha256: entry.params.manifest.fileSha256,
-        bytes: 0, chunks: chunks.length, missing, rejected: entry.rejected,
-        failed: `块未集齐（缺 ${missing.length}，拒收 ${entry.rejected.length}）——hub 按差量重流`,
-      });
+      // 帧到齐但未集齐 → 差量报告（零块清单在 receive() 已短路，此分支只对有块传输生效）
+      if (chunks.length > 0 && entry.framesSeen >= chunks.length && !entry.responded) {
+        entry.responded = true;
+        const missing = entry.assembler!.missing();
+        await entry.assembler!.close(); // 保 staging 续传
+        this.#active.delete(stream);
+        entry.resolve({
+          transfer_id: entry.params.transfer_id, file_sha256: entry.params.manifest.fileSha256,
+          bytes: 0, chunks: chunks.length, missing, rejected: entry.rejected,
+          failed: `块未集齐（缺 ${missing.length}，拒收 ${entry.rejected.length}）——hub 按差量重流`,
+        });
+      }
+    } finally {
+      entry.draining = false;
+      // 尾检：drain 收尾（同步段）与新 feed 的 push 在单线程下不交错；此处补启动覆盖
+      // "上一循环退出后、本 finally 前无新 drain 启动"的滞留窗口
+      if (entry.queue.length > 0 && !entry.responded && entry.ready && this.#active.has(stream)) void this.#drain(stream, entry, onFirstChunk);
     }
   }
 

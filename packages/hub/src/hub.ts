@@ -364,10 +364,19 @@ export class Hub {
           return;
         }
         void (async () => {
+          // 微任务间隙复查：tryComplete 置 completing+close 与本闭包执行存在竞速（V6 间歇崩 hub 根因，
+          // 2026-11-21 B 机抓到——同步入口的检查挡不住已入队的闭包，writeChunk 撞 close 即 unhandled rejection 杀 hub）
+          if (st.completing) return;
           const meta = st.manifest!.chunks[seq];
           if (!meta) { st.rejected.push({ index: seq, reason: '块索引越界' }); return; }
-          const r = await st.assembler!.writeChunk(meta, payload);
-          if (!r.written && r.reason !== 'already-received') st.rejected.push({ index: seq, reason: r.reason ?? '未知拒收' });
+          try {
+            const r = await st.assembler!.writeChunk(meta, payload);
+            if (!r.written && r.reason !== 'already-received') st.rejected.push({ index: seq, reason: r.reason ?? '未知拒收' });
+          } catch (e) {
+            // 迟滞块撞上 close/abort：丢弃入 rejected（错误信封原则——传输层竞速不是进程级故障）
+            st.rejected.push({ index: seq, reason: `writeChunk 异常丢弃：${String((e as Error).message)}` });
+            return;
+          }
           tryComplete();
         })();
       },
